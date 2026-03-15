@@ -1,5 +1,7 @@
 # POEAutoAlter
 
+![POEAutoAlter Preview](assets/preview.png)
+
 POEAutoAlter is a Windows desktop automation tool for Path of Exile that automates Alteration Orb item rolling by using clipboard item text detection.
 
 ## Repo Description
