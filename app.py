@@ -161,6 +161,7 @@ class AppConfig:
     detection_mode: str = "ocr"
     hover_delay: float = 0.35
     click_delay: float = 0.25
+    action_delay: float = 0.12
     click_jitter: int = 2
     hold_shift_loop: bool = False
     cycle_delay: float = 0.8
@@ -178,6 +179,7 @@ class AppConfig:
             detection_mode=str(data.get("detection_mode", "ocr")),
             hover_delay=float(data.get("hover_delay", 0.35)),
             click_delay=float(data.get("click_delay", 0.25)),
+            action_delay=float(data.get("action_delay", 0.12)),
             click_jitter=int(data.get("click_jitter", 2)),
             hold_shift_loop=bool(data.get("hold_shift_loop", False)),
             cycle_delay=float(data.get("cycle_delay", 0.8)),
@@ -632,6 +634,7 @@ class AutomationApp(tk.Tk):
         self.region_height_var = tk.StringVar(value="0")
         self.hover_delay_var = tk.StringVar(value="0.35")
         self.click_delay_var = tk.StringVar(value="0.25")
+        self.action_delay_var = tk.StringVar(value="0.12")
         self.click_jitter_var = tk.StringVar(value="2")
         self.shift_loop_var = tk.BooleanVar(value=False)
         self.cycle_delay_var = tk.StringVar(value="0.8")
@@ -760,13 +763,17 @@ class AutomationApp(tk.Tk):
         ttk.Entry(setup_frame, textvariable=self.click_delay_var, width=10).grid(
             row=7, column=1, sticky="ew", padx=(0, 8)
         )
-        ttk.Label(setup_frame, text="點擊浮動(px)").grid(row=6, column=2, sticky="w", pady=(12, 0))
-        ttk.Entry(setup_frame, textvariable=self.click_jitter_var, width=10).grid(
+        ttk.Label(setup_frame, text="取用等待(秒)").grid(row=6, column=2, sticky="w", pady=(12, 0))
+        ttk.Entry(setup_frame, textvariable=self.action_delay_var, width=10).grid(
             row=7, column=2, sticky="ew", padx=(0, 8)
         )
-        ttk.Label(setup_frame, text="每輪間隔(秒)").grid(row=6, column=3, sticky="w", pady=(12, 0))
-        ttk.Entry(setup_frame, textvariable=self.cycle_delay_var, width=10).grid(
+        ttk.Label(setup_frame, text="點擊浮動(px)").grid(row=6, column=3, sticky="w", pady=(12, 0))
+        ttk.Entry(setup_frame, textvariable=self.click_jitter_var, width=10).grid(
             row=7, column=3, sticky="ew", padx=(0, 8)
+        )
+        ttk.Label(setup_frame, text="每輪間隔(秒)").grid(row=6, column=4, sticky="w", pady=(12, 0))
+        ttk.Entry(setup_frame, textvariable=self.cycle_delay_var, width=10).grid(
+            row=7, column=4, sticky="ew", padx=(0, 8)
         )
         ttk.Label(
             setup_frame,
@@ -899,6 +906,7 @@ class AutomationApp(tk.Tk):
         self.region_height_var.set(str(config.ocr_region.height))
         self.hover_delay_var.set(str(config.hover_delay))
         self.click_delay_var.set(str(config.click_delay))
+        self.action_delay_var.set(str(config.action_delay))
         self.click_jitter_var.set(str(config.click_jitter))
         self.shift_loop_var.set(config.hold_shift_loop)
         self.cycle_delay_var.set(str(config.cycle_delay))
@@ -941,6 +949,7 @@ class AutomationApp(tk.Tk):
                 detection_mode=self.detection_mode_var.get().strip() or "ocr",
                 hover_delay=float(self.hover_delay_var.get()),
                 click_delay=float(self.click_delay_var.get()),
+                action_delay=float(self.action_delay_var.get()),
                 click_jitter=int(self.click_jitter_var.get()),
                 hold_shift_loop=bool(self.shift_loop_var.get()),
                 cycle_delay=float(self.cycle_delay_var.get()),
@@ -967,6 +976,8 @@ class AutomationApp(tk.Tk):
             raise ValueError("hover 等待時間不能小於 0。")
         if config.click_delay < 0:
             raise ValueError("點擊間隔不能小於 0。")
+        if config.action_delay < 0:
+            raise ValueError("取用等待不能小於 0。")
         if config.click_jitter < 0:
             raise ValueError("點擊浮動不能小於 0。")
         if config.cycle_delay < 0:
@@ -1409,7 +1420,7 @@ class AutomationApp(tk.Tk):
                 self.queue_log(
                     f"\u6574\u6bb5 Shift \u6a21\u5f0f\u5df2\u53d6\u7528\u5b9a\u4f4d\u9ede: ({actual_action_x}, {actual_action_y}) | base=({action_x}, {action_y})"
                 )
-                if self.wait_with_pause(config.click_delay):
+                if self.wait_with_pause(config.action_delay):
                     return True
 
             self.sync_shift_for_loop(config)
@@ -1439,7 +1450,7 @@ class AutomationApp(tk.Tk):
         self.queue_log(
             f"\u5c0d\u5b9a\u4f4d\u9ede\u6309\u53f3\u9375: ({actual_action_x}, {actual_action_y}) | base=({action_x}, {action_y})"
         )
-        if self.wait_with_pause(config.click_delay):
+        if self.wait_with_pause(config.action_delay):
             return True
 
         actual_item_x, actual_item_y = self.click_point(
@@ -1544,7 +1555,7 @@ class AutomationApp(tk.Tk):
         self.worker.start()
         self.set_status("\u57f7\u884c\u4e2d")
         self.append_log(
-            f"\u81ea\u52d5\u6d41\u7a0b\u5df2\u958b\u59cb\uff0c\u5224\u65b7\u65b9\u5f0f={self.detection_mode_label(config.detection_mode)}\uff0c\u9ede\u64ca\u6d6e\u52d5={config.click_jitter}px\u3002"
+            f"自動流程已開始，判斷方式={self.detection_mode_label(config.detection_mode)}，取用等待={config.action_delay}s，點擊浮動={config.click_jitter}px。"
         )
         if self.hotkey_registered or self.start_hotkey_registered:
             self.append_log("F2 \u53ef\u5168\u57df\u7acb\u5373\u505c\u6b62\uff0cF3 \u53ef\u5168\u57df\u958b\u59cb\u3002")
