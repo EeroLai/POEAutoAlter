@@ -38,7 +38,11 @@ VK_F3 = 0x72
 WM_HOTKEY = 0x0312
 PM_REMOVE = 0x0001
 HOTKEY_ID_STOP = 1
-HOTKEY_ID_RESUME = 2
+HOTKEY_ID_START = 2
+FAST_POLL_INTERVAL = 0.01
+WINDOW_ACTIVATE_DELAY = 0.03
+MIN_CLIPBOARD_TIMEOUT = 0.08
+CLIPBOARD_EXTRA_DELAY = 0.03
 USER32 = ctypes.windll.user32
 KERNEL32 = ctypes.windll.kernel32
 
@@ -158,6 +162,7 @@ class AppConfig:
     hover_delay: float = 0.35
     click_delay: float = 0.25
     click_jitter: int = 2
+    hold_shift_loop: bool = False
     cycle_delay: float = 0.8
     target_text: str = ""
     action_mode: str = "window"
@@ -174,6 +179,7 @@ class AppConfig:
             hover_delay=float(data.get("hover_delay", 0.35)),
             click_delay=float(data.get("click_delay", 0.25)),
             click_jitter=int(data.get("click_jitter", 2)),
+            hold_shift_loop=bool(data.get("hold_shift_loop", False)),
             cycle_delay=float(data.get("cycle_delay", 0.8)),
             target_text=str(data.get("target_text", "")),
             action_mode=str(data.get("action_mode", "window")),
@@ -594,7 +600,7 @@ class AutomationApp(tk.Tk):
         super().__init__()
         enable_dpi_awareness()
         pyautogui.FAILSAFE = True
-        pyautogui.PAUSE = 0.05
+        pyautogui.PAUSE = 0
 
         self.title("AutoAlter 視窗定位與 OCR 自動操作")
         self.geometry("980x860")
@@ -607,11 +613,12 @@ class AutomationApp(tk.Tk):
         self.queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.worker: threading.Thread | None = None
         self.stop_event = threading.Event()
-        self.pause_event = threading.Event()
         self.hotkey_registered = False
-        self.resume_hotkey_registered = False
+        self.start_hotkey_registered = False
         self.hotkey_monitor_stop = threading.Event()
         self.hotkey_monitor: threading.Thread | None = None
+        self.shift_loop_key_down = False
+        self.shift_action_primed = False
         self.item_points: list[ItemPoint] = []
 
         self.window_title_var = tk.StringVar(value="Path of Exile")
@@ -626,6 +633,7 @@ class AutomationApp(tk.Tk):
         self.hover_delay_var = tk.StringVar(value="0.35")
         self.click_delay_var = tk.StringVar(value="0.25")
         self.click_jitter_var = tk.StringVar(value="2")
+        self.shift_loop_var = tk.BooleanVar(value=False)
         self.cycle_delay_var = tk.StringVar(value="0.8")
         self.status_var = tk.StringVar(value="待命")
         self.anchor_status_var = tk.StringVar(value="尚未測試視窗")
@@ -686,13 +694,19 @@ class AutomationApp(tk.Tk):
         ttk.Entry(setup_frame, textvariable=self.action_x_var, width=10).grid(
             row=1, column=4, sticky="ew", padx=(0, 8)
         )
-        ttk.Label(setup_frame, text="右鍵點 Y(選填)").grid(row=0, column=5, sticky="w")
+        ttk.Label(setup_frame, text="\u53f3\u9375\u9ede Y(\u9078\u586b)").grid(row=0, column=5, sticky="w")
         ttk.Entry(setup_frame, textvariable=self.action_y_var, width=10).grid(
             row=1, column=5, sticky="ew", padx=(0, 8)
         )
-        ttk.Button(setup_frame, text="抓右鍵點(選填)", command=self.pick_action_point).grid(
+        ttk.Button(setup_frame, text="\u6293\u53f3\u9375\u9ede(\u9078\u586b)", command=self.pick_action_point).grid(
             row=1, column=6, columnspan=2, sticky="ew"
         )
+
+        ttk.Checkbutton(
+            setup_frame,
+            text="\u6574\u6bb5\u5faa\u74b0\u6309\u4f4f Shift",
+            variable=self.shift_loop_var,
+        ).grid(row=2, column=4, columnspan=4, sticky="w", pady=(12, 0))
 
         ttk.Label(setup_frame, text="判斷方式").grid(row=2, column=0, sticky="w", pady=(12, 0))
         ttk.Radiobutton(
@@ -756,7 +770,7 @@ class AutomationApp(tk.Tk):
         )
         ttk.Label(
             setup_frame,
-            text="F2 可全域立即停止，F3 可全域繼續；點擊浮動只會影響左右鍵，不影響 hover 判斷。",
+            text="F2 \u53ef\u5168\u57df\u7acb\u5373\u505c\u6b62\uff0cF3 \u53ef\u5168\u57df\u958b\u59cb\uff1b\u9ede\u64ca\u6d6e\u52d5\u53ea\u6703\u5f71\u97ff\u5de6\u53f3\u9375\uff0c\u4e0d\u5f71\u97ff hover \u5224\u65b7\u3002",
         ).grid(row=7, column=4, columnspan=4, sticky="w")
 
         items_frame = ttk.LabelFrame(main, text="物品點位", padding=14)
@@ -813,20 +827,14 @@ class AutomationApp(tk.Tk):
 
         controls = ttk.Frame(main)
         controls.grid(row=4, column=0, sticky="ew", pady=(12, 0))
-        for index in range(4):
+        for index in range(2):
             controls.columnconfigure(index, weight=1)
 
-        ttk.Button(controls, text="開始", command=self.start_automation).grid(
+        ttk.Button(controls, text="\u958b\u59cb", command=self.start_automation).grid(
             row=0, column=0, sticky="ew", padx=(0, 8)
         )
-        ttk.Button(controls, text="暫停", command=self.pause_automation).grid(
-            row=0, column=1, sticky="ew", padx=(0, 8)
-        )
-        ttk.Button(controls, text="繼續", command=self.resume_automation).grid(
-            row=0, column=2, sticky="ew", padx=(0, 8)
-        )
-        ttk.Button(controls, text="停止", command=self.stop_automation).grid(
-            row=0, column=3, sticky="ew"
+        ttk.Button(controls, text="\u505c\u6b62", command=self.stop_automation).grid(
+            row=0, column=1, sticky="ew"
         )
 
     def use_foreground_window(self) -> None:
@@ -892,6 +900,7 @@ class AutomationApp(tk.Tk):
         self.hover_delay_var.set(str(config.hover_delay))
         self.click_delay_var.set(str(config.click_delay))
         self.click_jitter_var.set(str(config.click_jitter))
+        self.shift_loop_var.set(config.hold_shift_loop)
         self.cycle_delay_var.set(str(config.cycle_delay))
         self.item_points = list(config.item_points)
         self.refresh_item_listbox()
@@ -933,6 +942,7 @@ class AutomationApp(tk.Tk):
                 hover_delay=float(self.hover_delay_var.get()),
                 click_delay=float(self.click_delay_var.get()),
                 click_jitter=int(self.click_jitter_var.get()),
+                hold_shift_loop=bool(self.shift_loop_var.get()),
                 cycle_delay=float(self.cycle_delay_var.get()),
                 target_text=self.target_text_var.get().strip(),
                 action_mode="window",
@@ -1004,32 +1014,32 @@ class AutomationApp(tk.Tk):
             self.hotkey_registered = False
 
         try:
-            self.resume_hotkey_registered = bool(
-                USER32.RegisterHotKey(None, HOTKEY_ID_RESUME, MOD_NOREPEAT, VK_F3)
+            self.start_hotkey_registered = bool(
+                USER32.RegisterHotKey(None, HOTKEY_ID_START, MOD_NOREPEAT, VK_F3)
             )
         except Exception:
-            self.resume_hotkey_registered = False
+            self.start_hotkey_registered = False
 
         registered: list[str] = []
         if self.hotkey_registered:
             registered.append("F2=停止")
-        if self.resume_hotkey_registered:
-            registered.append("F3=繼續")
+        if self.start_hotkey_registered:
+            registered.append("F3=\u958b\u59cb")
 
         if registered:
             self.append_log(f"已註冊全域快捷鍵：{'，'.join(registered)}。")
         if not self.hotkey_registered:
             self.append_log("註冊全域快捷鍵 F2 失敗，請改用停止按鈕。")
-        if not self.resume_hotkey_registered:
-            self.append_log("註冊全域快捷鍵 F3 失敗，請改用繼續按鈕。")
+        if not self.start_hotkey_registered:
+            self.append_log("\u8a3b\u518a\u5168\u57df\u5feb\u6377\u9375 F3 \u5931\u6557\uff0c\u8acb\u6539\u7528\u958b\u59cb\u6309\u9215\u3002")
 
     def unregister_global_hotkeys(self) -> None:
         if self.hotkey_registered:
             USER32.UnregisterHotKey(None, HOTKEY_ID_STOP)
             self.hotkey_registered = False
-        if self.resume_hotkey_registered:
-            USER32.UnregisterHotKey(None, HOTKEY_ID_RESUME)
-            self.resume_hotkey_registered = False
+        if self.start_hotkey_registered:
+            USER32.UnregisterHotKey(None, HOTKEY_ID_START)
+            self.start_hotkey_registered = False
 
     def start_hotkey_monitor(self) -> None:
         self.hotkey_monitor_stop.clear()
@@ -1053,7 +1063,7 @@ class AutomationApp(tk.Tk):
             if is_f2_pressed and not was_f2_pressed:
                 self.request_stop("F2 全域停止已觸發。")
             if is_f3_pressed and not was_f3_pressed:
-                self.request_resume("F3 全域繼續已觸發。")
+                self.request_start("F3 \u5168\u57df\u958b\u59cb\u5df2\u89f8\u767c\u3002")
 
             was_f2_pressed = is_f2_pressed
             was_f3_pressed = is_f3_pressed
@@ -1066,30 +1076,28 @@ class AutomationApp(tk.Tk):
         if self.stop_event.is_set():
             return False
         self.stop_event.set()
-        self.pause_event.clear()
-        self.queue_status("停止中")
+        self.release_shift_for_loop()
+        self.shift_action_primed = False
+        self.queue_status("\u505c\u6b62\u4e2d")
         self.queue_log(reason)
         return True
 
-    def request_resume(self, reason: str) -> bool:
+    def request_start(self, reason: str) -> bool:
         worker = self.worker
-        if not worker or not worker.is_alive():
+        if worker and worker.is_alive():
             return False
-        if self.stop_event.is_set() or not self.pause_event.is_set():
-            return False
-        self.pause_event.clear()
-        self.queue_status("執行中")
+        self.queue.put(("command", "start"))
         self.queue_log(reason)
         return True
 
     def handle_global_stop_hotkey(self) -> None:
         self.request_stop("F2 全域停止已觸發。")
 
-    def handle_global_resume_hotkey(self) -> None:
-        self.request_resume("F3 全域繼續已觸發。")
+    def handle_global_start_hotkey(self) -> None:
+        self.request_start("F3 \u5168\u57df\u958b\u59cb\u5df2\u89f8\u767c\u3002")
 
     def process_hotkeys(self) -> None:
-        if not (self.hotkey_registered or self.resume_hotkey_registered):
+        if not (self.hotkey_registered or self.start_hotkey_registered):
             return
         message = MSG()
         while USER32.PeekMessageW(ctypes.byref(message), None, WM_HOTKEY, WM_HOTKEY, PM_REMOVE):
@@ -1098,8 +1106,8 @@ class AutomationApp(tk.Tk):
             hotkey_id = int(message.wParam)
             if hotkey_id == HOTKEY_ID_STOP:
                 self.handle_global_stop_hotkey()
-            elif hotkey_id == HOTKEY_ID_RESUME:
-                self.handle_global_resume_hotkey()
+            elif hotkey_id == HOTKEY_ID_START:
+                self.handle_global_start_hotkey()
 
     def process_queue(self) -> None:
         self.process_hotkeys()
@@ -1115,6 +1123,8 @@ class AutomationApp(tk.Tk):
                 self.append_log(payload)
             elif kind == "anchor":
                 self.anchor_status_var.set(payload)
+            elif kind == "command" and payload == "start":
+                self.start_automation()
 
         self.after(120, self.process_queue)
 
@@ -1154,8 +1164,10 @@ class AutomationApp(tk.Tk):
     def resolve_window(self, config: AppConfig, activate_window: bool = True) -> WindowInfo:
         window = self.window_manager.find_window(config.window_title)
         if activate_window:
-            self.window_manager.activate(window.hwnd)
-            time.sleep(0.15)
+            foreground = USER32.GetForegroundWindow()
+            if int(foreground or 0) != window.hwnd:
+                self.window_manager.activate(window.hwnd)
+                time.sleep(WINDOW_ACTIVATE_DELAY)
         self.queue_anchor(
             f"{window.title} | window=({window.left}, {window.top}, {window.width}x{window.height})"
         )
@@ -1292,6 +1304,31 @@ class AutomationApp(tk.Tk):
             "height": region.height,
         }
 
+    def press_shift_for_loop(self) -> None:
+        if self.shift_loop_key_down:
+            return
+        pyautogui.keyDown("shift")
+        self.shift_loop_key_down = True
+
+    def release_shift_for_loop(self) -> None:
+        if not self.shift_loop_key_down:
+            return
+        try:
+            pyautogui.keyUp("shift")
+        finally:
+            self.shift_loop_key_down = False
+
+    def sync_shift_for_loop(self, config: AppConfig) -> None:
+        should_hold = (
+            config.hold_shift_loop
+            and self.shift_action_primed
+            and not self.stop_event.is_set()
+        )
+        if should_hold:
+            self.press_shift_for_loop()
+        else:
+            self.release_shift_for_loop()
+
     def jittered_point(self, x: int, y: int, jitter: int) -> tuple[int, int]:
         if jitter <= 0:
             return x, y
@@ -1299,7 +1336,7 @@ class AutomationApp(tk.Tk):
 
     def click_point(self, x: int, y: int, button: str, jitter: int = 0) -> tuple[int, int]:
         click_x, click_y = self.jittered_point(x, y, jitter)
-        pyautogui.moveTo(click_x, click_y, duration=0.05)
+        pyautogui.moveTo(click_x, click_y, duration=0)
         pyautogui.mouseDown(button=button)
         pyautogui.mouseUp(button=button)
         return click_x, click_y
@@ -1313,21 +1350,21 @@ class AutomationApp(tk.Tk):
         pyautogui.keyDown("ctrl")
         pyautogui.press("c")
         pyautogui.keyUp("ctrl")
-        timeout = time.perf_counter() + max(0.25, config.click_delay + 0.15)
+        timeout = time.perf_counter() + max(MIN_CLIPBOARD_TIMEOUT, config.click_delay + CLIPBOARD_EXTRA_DELAY)
         while time.perf_counter() < timeout:
             if self.stop_event.is_set():
                 return ""
             copied = self.clipboard.get_text().strip()
             if copied and copied != sentinel:
                 return copied
-            time.sleep(0.05)
+            time.sleep(FAST_POLL_INTERVAL)
         return ""
 
     def run_detection_check(
         self, config: AppConfig, window: WindowInfo, item: ItemPoint, stage: str
     ) -> tuple[bool, str, str]:
         item_x, item_y = self.absolute_point(window, item.x, item.y)
-        pyautogui.moveTo(item_x, item_y, duration=0.08)
+        pyautogui.moveTo(item_x, item_y, duration=0)
         self.queue_log(f"{stage} hover {item.name}: ({item_x}, {item_y})")
         if self.wait_with_pause(config.hover_delay):
             return False, "", ""
@@ -1351,12 +1388,47 @@ class AutomationApp(tk.Tk):
         return self.match_target_list(config.target_text, texts)
 
     def perform_item_action(self, config: AppConfig, window: WindowInfo, item: ItemPoint) -> bool:
+        item_x, item_y = self.absolute_point(window, item.x, item.y)
+
+        if config.hold_shift_loop:
+            if config.action_x is None or config.action_y is None:
+                return False
+
+            action_x = window.left + config.action_x
+            action_y = window.top + config.action_y
+
+            if not self.shift_action_primed:
+                self.release_shift_for_loop()
+                actual_action_x, actual_action_y = self.click_point(
+                    action_x,
+                    action_y,
+                    button="right",
+                    jitter=config.click_jitter,
+                )
+                self.shift_action_primed = True
+                self.queue_log(
+                    f"\u6574\u6bb5 Shift \u6a21\u5f0f\u5df2\u53d6\u7528\u5b9a\u4f4d\u9ede: ({actual_action_x}, {actual_action_y}) | base=({action_x}, {action_y})"
+                )
+                if self.wait_with_pause(config.click_delay):
+                    return True
+
+            self.sync_shift_for_loop(config)
+            actual_item_x, actual_item_y = self.click_point(
+                item_x,
+                item_y,
+                button="left",
+                jitter=config.click_jitter,
+            )
+            self.queue_log(
+                f"\u5c0d {item.name} \u6309 Shift+\u5de6\u9375: ({actual_item_x}, {actual_item_y}) | base=({item_x}, {item_y})"
+            )
+            return self.wait_with_pause(config.click_delay)
+
         if config.action_x is None or config.action_y is None:
             return False
 
         action_x = window.left + config.action_x
         action_y = window.top + config.action_y
-        item_x, item_y = self.absolute_point(window, item.x, item.y)
 
         actual_action_x, actual_action_y = self.click_point(
             action_x,
@@ -1365,7 +1437,7 @@ class AutomationApp(tk.Tk):
             jitter=config.click_jitter,
         )
         self.queue_log(
-            f"對定位點按右鍵: ({actual_action_x}, {actual_action_y}) | base=({action_x}, {action_y})"
+            f"\u5c0d\u5b9a\u4f4d\u9ede\u6309\u53f3\u9375: ({actual_action_x}, {actual_action_y}) | base=({action_x}, {action_y})"
         )
         if self.wait_with_pause(config.click_delay):
             return True
@@ -1377,7 +1449,7 @@ class AutomationApp(tk.Tk):
             jitter=config.click_jitter,
         )
         self.queue_log(
-            f"對 {item.name} 按左鍵: ({actual_item_x}, {actual_item_y}) | base=({item_x}, {item_y})"
+            f"\u5c0d {item.name} \u6309\u5de6\u9375: ({actual_item_x}, {actual_item_y}) | base=({item_x}, {item_y})"
         )
         return self.wait_with_pause(config.click_delay)
 
@@ -1385,18 +1457,22 @@ class AutomationApp(tk.Tk):
         end_time = time.perf_counter() + seconds
         while time.perf_counter() < end_time:
             if self.stop_event.is_set():
+                self.release_shift_for_loop()
                 return True
-            while self.pause_event.is_set() and not self.stop_event.is_set():
-                time.sleep(0.05)
             if self.stop_event.is_set():
+                self.release_shift_for_loop()
                 return True
-            time.sleep(0.05)
+            remaining = end_time - time.perf_counter()
+            if remaining <= 0:
+                break
+            time.sleep(min(FAST_POLL_INTERVAL, remaining))
         return False
 
     def pause_due_to_match(self, item: ItemPoint, target: str, hit: str) -> None:
-        self.pause_event.set()
-        self.queue_status("命中後暫停")
-        self.queue_log(f"{item.name} 命中目標文字 [{target}]，已暫停: {hit}")
+        self.release_shift_for_loop()
+        self.stop_event.set()
+        self.queue_status("\u547d\u4e2d\u5f8c\u505c\u6b62")
+        self.queue_log(f"{item.name} \u547d\u4e2d\u76ee\u6a19\u6587\u5b57 [{target}]\uff0c\u5df2\u505c\u6b62: {hit}")
 
     def test_ocr(self) -> None:
         try:
@@ -1451,41 +1527,31 @@ class AutomationApp(tk.Tk):
             self.append_log("OCR 測試沒抓到文字。")
     def start_automation(self) -> None:
         if self.worker and self.worker.is_alive():
-            messagebox.showinfo("執行中", "目前流程已經在執行。")
+            messagebox.showinfo("\u57f7\u884c\u4e2d", "\u76ee\u524d\u6d41\u7a0b\u5df2\u7d93\u5728\u57f7\u884c\u3002")
             return
 
         try:
             config = self.collect_config(require_action=False)
         except Exception as exc:
-            messagebox.showerror("設定有誤", str(exc))
+            messagebox.showerror("\u8a2d\u5b9a\u6709\u8aa4", str(exc))
             return
 
         self.save_config()
         self.stop_event.clear()
-        self.pause_event.clear()
+        self.release_shift_for_loop()
+        self.shift_action_primed = False
         self.worker = threading.Thread(target=self.run_automation, args=(config,), daemon=True)
         self.worker.start()
-        self.set_status("執行中")
+        self.set_status("\u57f7\u884c\u4e2d")
         self.append_log(
-            f"自動流程已開始，判斷方式={self.detection_mode_label(config.detection_mode)}，點擊浮動={config.click_jitter}px。"
+            f"\u81ea\u52d5\u6d41\u7a0b\u5df2\u958b\u59cb\uff0c\u5224\u65b7\u65b9\u5f0f={self.detection_mode_label(config.detection_mode)}\uff0c\u9ede\u64ca\u6d6e\u52d5={config.click_jitter}px\u3002"
         )
-        if self.hotkey_registered or self.resume_hotkey_registered:
-            self.append_log("F2 可全域立即停止，F3 可在暫停時全域繼續。")
+        if self.hotkey_registered or self.start_hotkey_registered:
+            self.append_log("F2 \u53ef\u5168\u57df\u7acb\u5373\u505c\u6b62\uff0cF3 \u53ef\u5168\u57df\u958b\u59cb\u3002")
         if config.action_x is None or config.action_y is None:
-            self.append_log("未設定右鍵點，將只做 hover + 判斷。")
-
-    def pause_automation(self) -> None:
-        if not self.worker or not self.worker.is_alive():
-            return
-        self.pause_event.set()
-        self.set_status("已暫停")
-        self.append_log("已手動暫停。")
-
-    def resume_automation(self) -> None:
-        if self.worker and self.worker.is_alive() and not self.pause_event.is_set():
-            self.set_status("執行中")
-            return
-        self.request_resume("已繼續執行。")
+            self.append_log("\u672a\u8a2d\u5b9a\u53f3\u9375\u9ede\uff0c\u5c07\u53ea\u505a hover + \u5224\u65b7\u3002")
+        if config.hold_shift_loop:
+            self.append_log("\u6574\u6bb5 Shift \u6a21\u5f0f\u5df2\u555f\u7528\uff1a\u9996\u6b21\u53d6\u7528\u5f8c\uff0c\u5faa\u74b0\u671f\u9593\u6703\u6301\u7e8c\u6309\u4f4f Shift\u3002")
 
     def stop_automation(self, reason: str = "停止訊號已送出。") -> None:
         if not self.request_stop(reason):
@@ -1495,60 +1561,67 @@ class AutomationApp(tk.Tk):
         cycle = 0
         try:
             while not self.stop_event.is_set():
-                if self.pause_event.is_set():
-                    time.sleep(0.1)
-                    continue
-
+                self.sync_shift_for_loop(config)
                 cycle += 1
-                self.queue_status(f"巡檢中，第 {cycle} 輪")
+                self.queue_status(f"\u5de1\u6aa2\u4e2d\uff0c\u7b2c {cycle} \u8f2a")
                 window = self.resolve_window(config)
                 self.queue_log(
-                    f"第 {cycle} 輪開始，視窗=({window.left}, {window.top}, {window.width}x{window.height})"
+                    f"\u7b2c {cycle} \u8f2a\u958b\u59cb\uff0c\u8996\u7a97=({window.left}, {window.top}, {window.width}x{window.height})"
                 )
 
                 matched_this_cycle = False
                 for item in config.item_points:
-                    if self.stop_event.is_set() or self.pause_event.is_set():
+                    if self.stop_event.is_set():
                         break
 
-                    matched, target, hit = self.run_detection_check(config, window, item, "操作前")
+                    self.sync_shift_for_loop(config)
+                    matched, target, hit = self.run_detection_check(config, window, item, "\u64cd\u4f5c\u524d")
                     if matched:
                         self.pause_due_to_match(item, target, hit)
                         matched_this_cycle = True
+                        break
+                    if self.stop_event.is_set():
                         break
 
                     if self.perform_item_action(config, window, item):
                         break
 
-                    matched, target, hit = self.run_detection_check(config, window, item, "操作後")
+                    self.sync_shift_for_loop(config)
+                    matched, target, hit = self.run_detection_check(config, window, item, "\u64cd\u4f5c\u5f8c")
                     if matched:
                         self.pause_due_to_match(item, target, hit)
                         matched_this_cycle = True
                         break
+                    if self.stop_event.is_set():
+                        break
 
                 if self.stop_event.is_set():
                     break
-                if self.pause_event.is_set() or matched_this_cycle:
+                if matched_this_cycle:
                     continue
                 if self.wait_with_pause(config.cycle_delay):
                     break
 
-            self.queue_status("已停止")
-            self.queue_log("自動流程已結束。")
+            self.queue_status("\u5df2\u505c\u6b62")
+            self.queue_log("\u81ea\u52d5\u6d41\u7a0b\u5df2\u7d50\u675f\u3002")
         except pyautogui.FailSafeException:
-            self.queue_status("安全暫停")
-            self.queue_log("滑鼠移到左上角觸發 PyAutoGUI failsafe，流程已停止。")
+            self.queue_status("\u5b89\u5168\u66ab\u505c")
+            self.queue_log("\u6ed1\u9f20\u79fb\u5230\u5de6\u4e0a\u89d2\u89f8\u767c PyAutoGUI failsafe\uff0c\u6d41\u7a0b\u5df2\u505c\u6b62\u3002")
         except Exception as exc:
-            self.queue_status("執行失敗")
-            self.queue_log(f"自動流程失敗: {exc}")
+            self.queue_status("\u57f7\u884c\u5931\u6557")
+            self.queue_log(f"\u81ea\u52d5\u6d41\u7a0b\u5931\u6557: {exc}")
+        finally:
+            self.release_shift_for_loop()
+            self.shift_action_primed = False
 
     def on_close(self) -> None:
         self.stop_event.set()
+        self.release_shift_for_loop()
+        self.shift_action_primed = False
         self.hotkey_monitor_stop.set()
         self.unregister_global_hotkeys()
         self.save_config()
         self.destroy()
-
 
 def main() -> None:
     app = AutomationApp()
