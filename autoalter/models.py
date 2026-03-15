@@ -12,7 +12,7 @@ class ItemPoint:
     @classmethod
     def from_dict(cls, data: dict) -> "ItemPoint":
         return cls(
-            name=str(data.get("name", "??")),
+            name=str(data.get("name", "\u7269\u54c1")),
             x=int(data.get("x", 0)),
             y=int(data.get("y", 0)),
         )
@@ -63,7 +63,7 @@ class AnchorInfo:
 @dataclass
 class AppConfig:
     window_title: str = ""
-    detection_mode: str = "ocr"
+    detection_mode: str = "clipboard"
     hover_delay: float = 0.35
     click_delay: float = 0.25
     action_delay: float = 0.12
@@ -82,7 +82,7 @@ class AppConfig:
     def from_dict(cls, data: dict) -> "AppConfig":
         return cls(
             window_title=str(data.get("window_title", "")),
-            detection_mode=str(data.get("detection_mode", "ocr")),
+            detection_mode="clipboard",
             hover_delay=float(data.get("hover_delay", 0.35)),
             click_delay=float(data.get("click_delay", 0.25)),
             action_delay=float(data.get("action_delay", 0.12)),

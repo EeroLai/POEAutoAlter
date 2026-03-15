@@ -24,7 +24,6 @@ from autoalter import (
     ItemPoint,
     MOD_NOREPEAT,
     MSG,
-    OcrScanner,
     PM_REMOVE,
     PointPicker,
     RegionPicker,
@@ -39,10 +38,9 @@ from autoalter import (
     enable_dpi_awareness,
 )
 from autoalter.config_store import ConfigController
+from autoalter.i18n import LANGUAGE_NAMES, UI_TEXT, translate_runtime_text
 from autoalter.runner import AutomationRunner
 
-
-CONFIG_PATH = ROOT / "config.json"
 
 CONFIG_PATH = ROOT / "config.json"
 
@@ -54,14 +52,13 @@ class AutomationApp(tk.Tk):
         pyautogui.FAILSAFE = True
         pyautogui.PAUSE = 0
 
-        self.title("AutoAlter 視窗定位與 OCR 自動操作")
-        self.geometry("980x860")
-        self.minsize(980, 760)
+        self.title("AutoAlter")
+        self.geometry("900x820")
+        self.minsize(860, 720)
 
         self.normalizer = TextNormalizer()
         self.window_manager = WindowManager()
         self.clipboard = ClipboardManager()
-        self.scanner = OcrScanner()
         self.config_controller = ConfigController(self, CONFIG_PATH)
         self.runner = AutomationRunner(self)
         self.queue: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -75,9 +72,13 @@ class AutomationApp(tk.Tk):
         self.shift_action_primed = False
         self.item_points: list[ItemPoint] = []
         self.current_runtime_config: AppConfig | None = None
+        self.window_available = False
+        self.last_window_signature = ""
 
+        self.language_var = tk.StringVar(value="zh")
+        self.language_display_var = tk.StringVar(value=LANGUAGE_NAMES["zh"])
         self.window_title_var = tk.StringVar(value="Path of Exile")
-        self.detection_mode_var = tk.StringVar(value="ocr")
+        self.detection_mode_var = tk.StringVar(value="clipboard")
         self.target_text_var = tk.StringVar()
         self.action_x_var = tk.StringVar()
         self.action_y_var = tk.StringVar()
@@ -99,10 +100,53 @@ class AutomationApp(tk.Tk):
         self.register_global_hotkeys()
         self.start_hotkey_monitor()
         self.load_config()
+        self.start_window_monitor()
         self.after(120, self.process_queue)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
+    def tr(self, key: str) -> str:
+        return UI_TEXT[self.language_var.get()][key]
+
+    def tr_runtime(self, text: str) -> str:
+        return translate_runtime_text(self.language_var.get(), text)
+
+    def show_error(self, title: str, message: str) -> None:
+        messagebox.showerror(self.tr_runtime(title), self.tr_runtime(message))
+
+    def show_info(self, title: str, message: str) -> None:
+        messagebox.showinfo(self.tr_runtime(title), self.tr_runtime(message))
+
+    def on_language_change(self, _event=None) -> None:
+        reverse_map = {value: key for key, value in LANGUAGE_NAMES.items()}
+        next_language = reverse_map.get(self.language_display_var.get(), "zh")
+        if next_language == self.language_var.get():
+            return
+        self.language_var.set(next_language)
+        current_status = self.status_var.get()
+        if current_status in {UI_TEXT["zh"]["status_idle"], UI_TEXT["en"]["status_idle"]}:
+            self.status_var.set(self.tr("status_idle"))
+        current_anchor = self.anchor_status_var.get()
+        if current_anchor in {UI_TEXT["zh"]["window_not_tested"], UI_TEXT["en"]["window_not_tested"]}:
+            self.anchor_status_var.set(self.tr("window_not_tested"))
+        self.rebuild_ui()
+
+    def rebuild_ui(self) -> None:
+        log_content = ""
+        if hasattr(self, "log_widget") and self.log_widget.winfo_exists():
+            log_content = self.log_widget.get("1.0", "end-1c")
+        for child in self.winfo_children():
+            child.destroy()
+        self.build_ui()
+        self.refresh_item_listbox()
+        if log_content:
+            self.log_widget.configure(state="normal")
+            self.log_widget.insert("1.0", log_content)
+            self.log_widget.see("end")
+            self.log_widget.configure(state="disabled")
+
     def build_ui(self) -> None:
+        t = self.tr
+        self.title(t("app_title"))
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
 
@@ -111,135 +155,105 @@ class AutomationApp(tk.Tk):
         main.columnconfigure(0, weight=1)
         main.rowconfigure(3, weight=1)
 
-        window_frame = ttk.LabelFrame(main, text="視窗設定", padding=14)
+        window_frame = ttk.LabelFrame(main, text=t("window_settings"), padding=10)
         window_frame.grid(row=0, column=0, sticky="ew")
         for index in range(6):
             window_frame.columnconfigure(index, weight=1)
 
-        ttk.Label(window_frame, text="視窗標題關鍵字").grid(row=0, column=0, sticky="w")
-        ttk.Entry(window_frame, textvariable=self.window_title_var).grid(
-            row=1, column=0, columnspan=4, sticky="ew", padx=(0, 8)
+        ttk.Label(window_frame, text=t("window_title_keyword")).grid(row=0, column=0, sticky="w")
+        ttk.Label(window_frame, text=t("language")).grid(row=0, column=4, sticky="e", padx=(0, 8))
+        language_picker = ttk.Combobox(
+            window_frame,
+            state="readonly",
+            values=[LANGUAGE_NAMES["zh"], LANGUAGE_NAMES["en"]],
+            textvariable=self.language_display_var,
+            width=12,
         )
-        ttk.Button(window_frame, text="抓前景視窗", command=self.use_foreground_window).grid(
-            row=1, column=4, sticky="ew", padx=(0, 8)
+        language_picker.grid(row=0, column=5, sticky="ew")
+        language_picker.bind("<<ComboboxSelected>>", self.on_language_change)
+
+        ttk.Label(window_frame, text="Path of Exile").grid(
+            row=1, column=0, columnspan=4, sticky="w"
         )
-        ttk.Button(window_frame, text="測試視窗", command=self.test_window_lookup).grid(
+        ttk.Button(window_frame, text=t("test_window"), command=self.test_window_lookup).grid(
             row=1, column=5, sticky="ew"
         )
 
-        ttk.Label(window_frame, text="視窗狀態").grid(row=2, column=0, sticky="w", pady=(12, 0))
+        ttk.Label(window_frame, text=t("window_status")).grid(row=2, column=0, sticky="w", pady=(8, 0))
         ttk.Label(
             window_frame,
             textvariable=self.anchor_status_var,
             font=("Microsoft JhengHei UI", 10, "bold"),
-        ).grid(row=3, column=0, columnspan=6, sticky="w")
-        ttk.Label(
-            window_frame,
-            text="右鍵點、物品點、OCR 區域都直接相對於 Path of Exile 視窗左上角。",
-        ).grid(row=4, column=0, columnspan=6, sticky="w", pady=(10, 0))
+        ).grid(row=2, column=1, columnspan=5, sticky="w")
+        ttk.Label(window_frame, text=t("window_help")).grid(
+            row=3, column=0, columnspan=6, sticky="w", pady=(6, 0)
+        )
 
-        setup_frame = ttk.LabelFrame(main, text="操作設定", padding=14)
+        setup_frame = ttk.LabelFrame(main, text=t("operation_settings"), padding=14)
         setup_frame.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         for index in range(8):
             setup_frame.columnconfigure(index, weight=1)
 
-        ttk.Label(setup_frame, text="目標文字清單(逗號/分號/| 分隔)").grid(row=0, column=0, sticky="w")
+        ttk.Label(setup_frame, text=t("target_text_list")).grid(row=0, column=0, sticky="w")
         ttk.Entry(setup_frame, textvariable=self.target_text_var).grid(
-            row=1, column=0, columnspan=4, sticky="ew", padx=(0, 8)
+            row=1, column=0, columnspan=3, sticky="ew", padx=(0, 8)
         )
-        ttk.Label(setup_frame, text="右鍵點 X(選填)").grid(row=0, column=4, sticky="w")
-        ttk.Entry(setup_frame, textvariable=self.action_x_var, width=10).grid(
+        ttk.Label(setup_frame, text=t("action_x")).grid(row=0, column=3, sticky="w")
+        ttk.Entry(setup_frame, textvariable=self.action_x_var, width=7).grid(
+            row=1, column=3, sticky="ew", padx=(0, 8)
+        )
+        ttk.Label(setup_frame, text=t("action_y")).grid(row=0, column=4, sticky="w")
+        ttk.Entry(setup_frame, textvariable=self.action_y_var, width=7).grid(
             row=1, column=4, sticky="ew", padx=(0, 8)
         )
-        ttk.Label(setup_frame, text="\u53f3\u9375\u9ede Y(\u9078\u586b)").grid(row=0, column=5, sticky="w")
-        ttk.Entry(setup_frame, textvariable=self.action_y_var, width=10).grid(
-            row=1, column=5, sticky="ew", padx=(0, 8)
+        ttk.Button(setup_frame, text=t("pick_action_point"), command=self.pick_action_point).grid(
+            row=1, column=5, columnspan=3, sticky="ew"
         )
-        ttk.Button(setup_frame, text="\u6293\u53f3\u9375\u9ede(\u9078\u586b)", command=self.pick_action_point).grid(
-            row=1, column=6, columnspan=2, sticky="ew"
+
+
+        ttk.Label(setup_frame, text=t("clipboard_mode")).grid(row=2, column=0, sticky="w", pady=(12, 0))
+        ttk.Label(setup_frame, text=t("clipboard_help")).grid(
+            row=3, column=0, columnspan=6, sticky="w"
+        )
+        ttk.Button(setup_frame, text=t("test_detection"), command=self.test_ocr).grid(
+            row=3, column=6, columnspan=2, sticky="ew"
         )
 
         ttk.Checkbutton(
             setup_frame,
-            text="\u6574\u6bb5\u5faa\u74b0\u6309\u4f4f Shift",
-            variable=self.shift_loop_var,
-        ).grid(row=2, column=4, columnspan=4, sticky="w", pady=(12, 0))
-
-        ttk.Label(setup_frame, text="判斷方式").grid(row=2, column=0, sticky="w", pady=(12, 0))
-        ttk.Radiobutton(
-            setup_frame,
-            text="OCR",
-            value="ocr",
-            variable=self.detection_mode_var,
-        ).grid(row=3, column=0, sticky="w")
-        ttk.Radiobutton(
-            setup_frame,
-            text="剪貼簿 Ctrl+C",
-            value="clipboard",
-            variable=self.detection_mode_var,
-        ).grid(row=3, column=1, columnspan=2, sticky="w")
-        ttk.Label(
-            setup_frame,
-            text="剪貼簿模式會 hover 物品後送出 Ctrl+C；OCR 模式才會用到 OCR 區域。",
-        ).grid(row=3, column=3, columnspan=5, sticky="w")
-
-        ttk.Label(setup_frame, text="OCR Left").grid(row=4, column=0, sticky="w", pady=(12, 0))
-        ttk.Entry(setup_frame, textvariable=self.region_left_var, width=10).grid(
-            row=5, column=0, sticky="ew", padx=(0, 8)
-        )
-        ttk.Label(setup_frame, text="OCR Top").grid(row=4, column=1, sticky="w", pady=(12, 0))
-        ttk.Entry(setup_frame, textvariable=self.region_top_var, width=10).grid(
-            row=5, column=1, sticky="ew", padx=(0, 8)
-        )
-        ttk.Label(setup_frame, text="OCR Width").grid(row=4, column=2, sticky="w", pady=(12, 0))
-        ttk.Entry(setup_frame, textvariable=self.region_width_var, width=10).grid(
-            row=5, column=2, sticky="ew", padx=(0, 8)
-        )
-        ttk.Label(setup_frame, text="OCR Height").grid(row=4, column=3, sticky="w", pady=(12, 0))
-        ttk.Entry(setup_frame, textvariable=self.region_height_var, width=10).grid(
-            row=5, column=3, sticky="ew", padx=(0, 8)
-        )
-        ttk.Button(setup_frame, text="框選 OCR 區域", command=self.pick_ocr_region).grid(
-            row=5, column=4, sticky="ew", padx=(0, 8)
-        )
-        ttk.Button(setup_frame, text="清除 OCR 區域", command=self.clear_region).grid(
-            row=5, column=5, sticky="ew", padx=(0, 8)
-        )
-        ttk.Button(setup_frame, text="測試判斷", command=self.test_ocr).grid(
-            row=5, column=6, columnspan=2, sticky="ew"
-        )
-
-        ttk.Label(setup_frame, text="hover 等待(秒)").grid(row=6, column=0, sticky="w", pady=(12, 0))
-        ttk.Entry(setup_frame, textvariable=self.hover_delay_var, width=10).grid(
-            row=7, column=0, sticky="ew", padx=(0, 8)
-        )
-        ttk.Label(setup_frame, text="點擊間隔(秒)").grid(row=6, column=1, sticky="w", pady=(12, 0))
-        ttk.Entry(setup_frame, textvariable=self.click_delay_var, width=10).grid(
-            row=7, column=1, sticky="ew", padx=(0, 8)
-        )
-        ttk.Label(setup_frame, text="取用等待(秒)").grid(row=6, column=2, sticky="w", pady=(12, 0))
-        ttk.Entry(setup_frame, textvariable=self.action_delay_var, width=10).grid(
-            row=7, column=2, sticky="ew", padx=(0, 8)
-        )
-        ttk.Label(setup_frame, text="點擊浮動(px)").grid(row=6, column=3, sticky="w", pady=(12, 0))
-        ttk.Entry(setup_frame, textvariable=self.click_jitter_var, width=10).grid(
-            row=7, column=3, sticky="ew", padx=(0, 8)
-        )
-        ttk.Label(setup_frame, text="每輪間隔(秒)").grid(row=6, column=4, sticky="w", pady=(12, 0))
-        ttk.Entry(setup_frame, textvariable=self.cycle_delay_var, width=10).grid(
-            row=7, column=4, sticky="ew", padx=(0, 8)
-        )
-        ttk.Checkbutton(
-            setup_frame,
-            text="人性化延遲(+0.01~0.05秒)",
+            text=t("human_delay"),
             variable=self.human_delay_var,
-        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(10, 0))
-        ttk.Label(
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        ttk.Checkbutton(
             setup_frame,
-            text="F2 可全域立即停止，F3 可全域開始；點擊浮動只會影響左右鍵，不影響 hover 判斷。",
-        ).grid(row=8, column=3, columnspan=5, sticky="w", pady=(10, 0))
+            text=t("hold_shift_loop"),
+            variable=self.shift_loop_var,
+        ).grid(row=4, column=3, columnspan=3, sticky="w", pady=(12, 0))
+        ttk.Label(setup_frame, text=t("hover_delay")).grid(row=5, column=0, sticky="w", pady=(12, 0))
+        ttk.Entry(setup_frame, textvariable=self.hover_delay_var, width=7).grid(
+            row=6, column=0, sticky="ew", padx=(0, 8)
+        )
+        ttk.Label(setup_frame, text=t("click_delay")).grid(row=5, column=2, sticky="w", pady=(12, 0))
+        ttk.Entry(setup_frame, textvariable=self.click_delay_var, width=7).grid(
+            row=6, column=2, sticky="ew", padx=(0, 8)
+        )
+        ttk.Label(setup_frame, text=t("action_delay")).grid(row=5, column=4, sticky="w", pady=(12, 0))
+        ttk.Entry(setup_frame, textvariable=self.action_delay_var, width=7).grid(
+            row=6, column=4, sticky="ew", padx=(0, 8)
+        )
+        ttk.Label(setup_frame, text=t("click_jitter")).grid(row=5, column=5, sticky="w", pady=(12, 0))
+        ttk.Entry(setup_frame, textvariable=self.click_jitter_var, width=7).grid(
+            row=6, column=5, sticky="ew", padx=(0, 8)
+        )
+        ttk.Label(setup_frame, text=t("cycle_delay")).grid(row=5, column=6, sticky="w", pady=(12, 0))
+        ttk.Entry(setup_frame, textvariable=self.cycle_delay_var, width=7).grid(
+            row=6, column=6, sticky="ew", padx=(0, 8)
+        )
+        ttk.Label(setup_frame, text=t("hotkey_help")).grid(
+            row=7, column=0, columnspan=8, sticky="w", pady=(10, 0)
+        )
 
-        items_frame = ttk.LabelFrame(main, text="物品點位", padding=14)
+        items_frame = ttk.LabelFrame(main, text=t("item_points"), padding=14)
         items_frame.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         items_frame.columnconfigure(0, weight=1)
         items_frame.columnconfigure(1, weight=0)
@@ -253,21 +267,18 @@ class AutomationApp(tk.Tk):
         )
         self.item_listbox.grid(row=0, column=0, rowspan=4, sticky="nsew", padx=(0, 12))
 
-        ttk.Button(items_frame, text="新增物品點", command=self.add_item_point).grid(
+        ttk.Button(items_frame, text=t("add_item_point"), command=self.add_item_point).grid(
             row=0, column=1, sticky="ew"
         )
-        ttk.Button(items_frame, text="刪除選取", command=self.remove_selected_item).grid(
+        ttk.Button(items_frame, text=t("remove_selected"), command=self.remove_selected_item).grid(
             row=1, column=1, sticky="ew", pady=(8, 0)
         )
-        ttk.Button(items_frame, text="清空物品點", command=self.clear_item_points).grid(
+        ttk.Button(items_frame, text=t("clear_item_points"), command=self.clear_item_points).grid(
             row=2, column=1, sticky="ew", pady=(8, 0)
         )
-        ttk.Label(
-            items_frame,
-            text="新增物品點時，位置會記成相對於 Path of Exile 視窗左上角的座標。",
-        ).grid(row=3, column=1, sticky="w", pady=(8, 0))
+        ttk.Label(items_frame, text=t("item_points_help")).grid(row=3, column=1, sticky="w", pady=(8, 0))
 
-        log_frame = ttk.LabelFrame(main, text="狀態與執行紀錄", padding=14)
+        log_frame = ttk.LabelFrame(main, text=t("status_and_logs"), padding=14)
         log_frame.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(1, weight=1)
@@ -275,7 +286,7 @@ class AutomationApp(tk.Tk):
         status_row = ttk.Frame(log_frame)
         status_row.grid(row=0, column=0, sticky="ew")
         status_row.columnconfigure(1, weight=1)
-        ttk.Label(status_row, text="目前狀態").grid(row=0, column=0, sticky="w")
+        ttk.Label(status_row, text=t("current_status")).grid(row=0, column=0, sticky="w")
         ttk.Label(
             status_row,
             textvariable=self.status_var,
@@ -296,12 +307,12 @@ class AutomationApp(tk.Tk):
         for index in range(2):
             controls.columnconfigure(index, weight=1)
 
-        ttk.Button(controls, text="\u958b\u59cb", command=self.start_automation).grid(
-            row=0, column=0, sticky="ew", padx=(0, 8)
-        )
-        ttk.Button(controls, text="\u505c\u6b62", command=self.stop_automation).grid(
+        self.start_button = ttk.Button(controls, text=t("start"), command=self.start_automation)
+        self.start_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ttk.Button(controls, text=t("stop"), command=self.stop_automation).grid(
             row=0, column=1, sticky="ew"
         )
+        self.update_window_controls()
 
     def use_foreground_window(self) -> None:
         window = self.window_manager.get_foreground_window()
@@ -326,6 +337,45 @@ class AutomationApp(tk.Tk):
             self.append_log(f"視窗定位成功: {window.title}")
         except Exception as exc:
             messagebox.showerror("視窗測試失敗", str(exc))
+
+    def update_window_controls(self) -> None:
+        if hasattr(self, "start_button") and self.start_button.winfo_exists():
+            self.start_button.configure(state=("normal" if self.window_available else "disabled"))
+
+    def refresh_window_monitor(self, *, log_change: bool = False) -> None:
+        window_title = self.window_title_var.get().strip()
+        if not window_title:
+            available = False
+            signature = ""
+            status_text = "未監視到目標視窗"
+        else:
+            try:
+                window = self.window_manager.find_window(window_title)
+                available = True
+                signature = f"{window.title}|{window.left}|{window.top}|{window.width}|{window.height}"
+                status_text = f"已監視到: {window.title} ({window.left}, {window.top}, {window.width}x{window.height})"
+            except Exception:
+                available = False
+                signature = ""
+                status_text = f"未監視到: {window_title}"
+
+        previous_available = self.window_available
+        previous_signature = self.last_window_signature
+        self.window_available = available
+        self.last_window_signature = signature
+        self.anchor_status_var.set(status_text)
+        self.update_window_controls()
+
+        changed = available != previous_available or signature != previous_signature
+        if log_change and changed:
+            self.append_log(status_text)
+
+        if previous_available and not available:
+            self.request_stop("未監視到目標視窗，已停止。")
+
+    def start_window_monitor(self) -> None:
+        self.refresh_window_monitor(log_change=False)
+        self.after(1000, self.start_window_monitor)
 
     def load_config(self) -> None:
         self.config_controller.load()
@@ -358,10 +408,11 @@ class AutomationApp(tk.Tk):
         return self.runner.match_target_list(raw_targets, texts)
 
     def set_status(self, message: str) -> None:
-        self.status_var.set(message)
+        self.status_var.set(self.tr_runtime(message))
 
     def append_log(self, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
+        message = self.tr_runtime(message)
         self.log_widget.configure(state="normal")
         self.log_widget.insert("end", f"[{timestamp}] {message}\n")
         self.log_widget.see("end")
@@ -723,45 +774,26 @@ class AutomationApp(tk.Tk):
             messagebox.showerror("判斷測試失敗", str(exc))
             return
 
-        if config.detection_mode == "clipboard":
-            if not config.item_points:
-                messagebox.showerror("判斷測試失敗", "剪貼簿模式至少需要一個物品點。")
-                return
-            selection = self.item_listbox.curselection()
-            index = int(selection[0]) if selection else 0
-            item = config.item_points[index]
-            matched, target, hit = self.run_detection_check(config, window, item, "測試")
-            if matched:
-                self.set_status("測試命中")
-                self.append_log(f"剪貼簿測試命中 [{target}]: {hit}")
-            else:
-                self.set_status("測試完成")
-                self.append_log("剪貼簿測試未命中目標文字。")
+        if not config.item_points:
+            messagebox.showerror("判斷測試失敗", "剪貼簿模式至少需要一個物品點。")
             return
 
-        try:
-            region = self.absolute_region(window, config.ocr_region)
-            self.append_log(
-                f"OCR 測試區域: left={region['left']}, top={region['top']}, width={region['width']}, height={region['height']}"
-            )
-            texts = self.scanner.scan_monitor(region)
-        except Exception as exc:
-            messagebox.showerror("OCR 測試失敗", str(exc))
-            return
-
-        if texts:
-            matched, target, hit = self.match_target_list(config.target_text, texts)
-            self.append_log(f"OCR 測試結果: {' | '.join(texts)}")
-            if matched:
-                self.set_status("測試命中")
-                self.append_log(f"OCR 測試命中 [{target}]: {hit}")
-            else:
-                self.set_status("測試完成")
-                self.append_log("OCR 測試未命中目標文字。")
+        selection = self.item_listbox.curselection()
+        index = int(selection[0]) if selection else 0
+        item = config.item_points[index]
+        matched, target, hit = self.run_detection_check(config, window, item, "測試")
+        if matched:
+            self.set_status("測試命中")
+            self.append_log(f"剪貼簿測試命中 [{target}]: {hit}")
         else:
             self.set_status("測試完成")
-            self.append_log("OCR 測試沒抓到文字。")
+            self.append_log("剪貼簿測試未命中目標文字。")
+
     def start_automation(self) -> None:
+        self.refresh_window_monitor(log_change=False)
+        if not self.window_available:
+            messagebox.showerror("視窗未就緒", "未監視到目標視窗，無法開始。")
+            return
         if self.worker and self.worker.is_alive():
             messagebox.showinfo("\u57f7\u884c\u4e2d", "\u76ee\u524d\u6d41\u7a0b\u5df2\u7d93\u5728\u57f7\u884c\u3002")
             return

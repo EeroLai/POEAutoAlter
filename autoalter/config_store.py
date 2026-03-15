@@ -42,9 +42,7 @@ class ConfigController:
 
         if config.window_title:
             self.app.window_title_var.set(config.window_title)
-        self.app.detection_mode_var.set(
-            config.detection_mode if config.detection_mode in {"ocr", "clipboard"} else "ocr"
-        )
+        self.app.detection_mode_var.set("clipboard")
         self.app.target_text_var.set(config.target_text)
         self.app.action_x_var.set("" if config.action_x is None else str(config.action_x))
         self.app.action_y_var.set("" if config.action_y is None else str(config.action_y))
@@ -95,7 +93,7 @@ class ConfigController:
         try:
             config = AppConfig(
                 window_title=self.app.window_title_var.get().strip(),
-                detection_mode=self.app.detection_mode_var.get().strip() or "ocr",
+                detection_mode="clipboard",
                 hover_delay=float(self.app.hover_delay_var.get()),
                 click_delay=float(self.app.click_delay_var.get()),
                 action_delay=float(self.app.action_delay_var.get()),

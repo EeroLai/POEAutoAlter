@@ -92,7 +92,7 @@ class WindowManager:
     def find_window(self, title_query: str) -> WindowInfo:
         query = title_query.strip().lower()
         if not query:
-            raise ValueError("???????????")
+            raise ValueError('Please enter a window title keyword.')
 
         foreground = self.get_foreground_window()
         if foreground and query in foreground.title.lower():
@@ -100,7 +100,7 @@ class WindowManager:
 
         matches = [window for window in self.list_windows() if query in window.title.lower()]
         if not matches:
-            raise RuntimeError(f"????????{title_query}?????")
+            raise RuntimeError(f'No window matched "{title_query}".')
 
         matches.sort(key=lambda item: (len(item.title), item.title.lower()))
         return matches[0]
@@ -122,11 +122,11 @@ class TemplateLocator:
 
         data = np.fromfile(path, dtype=np.uint8)
         if data.size == 0:
-            raise RuntimeError(f"???????: {path}")
+            raise RuntimeError(f'Unable to read template image: {path}')
 
         image = cv2.imdecode(data, cv2.IMREAD_COLOR)
         if image is None:
-            raise RuntimeError(f"??????: {path}")
+            raise RuntimeError(f'Unable to decode template image: {path}')
 
         self.cache[path] = image
         return image
@@ -141,7 +141,7 @@ class TemplateLocator:
             source_gray.shape[0] < template_gray.shape[0]
             or source_gray.shape[1] < template_gray.shape[1]
         ):
-            raise RuntimeError("?????????????????")
+            raise RuntimeError('Template image is larger than the captured region.')
 
         result = cv2.matchTemplate(source_gray, template_gray, cv2.TM_CCOEFF_NORMED)
         _min_val, max_val, _min_loc, max_loc = cv2.minMaxLoc(result)
@@ -150,10 +150,10 @@ class TemplateLocator:
     def locate(self, window: WindowInfo, image_path: str, threshold: float) -> AnchorInfo:
         template = self.load_template(image_path)
         monitor = {
-            "left": window.left,
-            "top": window.top,
-            "width": window.width,
-            "height": window.height,
+            'left': window.left,
+            'top': window.top,
+            'width': window.width,
+            'height': window.height,
         }
 
         with mss.mss() as sct:
@@ -162,7 +162,7 @@ class TemplateLocator:
         screenshot_bgr = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2BGR)
         (match_x, match_y), score = self.match_template(screenshot_bgr, template)
         if score < threshold:
-            raise RuntimeError(f"??????????????? {score:.3f}?")
+            raise RuntimeError(f'Template score below threshold: {score:.3f}.')
 
         return AnchorInfo(
             left=window.left + match_x,
@@ -180,17 +180,17 @@ class ClipboardManager:
             if USER32.OpenClipboard(0):
                 return
             time.sleep(0.03)
-        raise RuntimeError("????????")
+        raise RuntimeError('Unable to open the clipboard.')
 
     def get_text(self) -> str:
         self.open_clipboard()
         try:
             handle = USER32.GetClipboardData(CF_UNICODETEXT)
             if not handle:
-                return ""
+                return ''
             locked = KERNEL32.GlobalLock(handle)
             if not locked:
-                return ""
+                return ''
             try:
                 return ctypes.wstring_at(locked)
             finally:
@@ -202,12 +202,12 @@ class ClipboardManager:
         buffer = ctypes.create_unicode_buffer(text)
         handle = KERNEL32.GlobalAlloc(GMEM_MOVEABLE, ctypes.sizeof(buffer))
         if not handle:
-            raise RuntimeError("???????????")
+            raise RuntimeError('Unable to allocate clipboard memory.')
 
         locked = KERNEL32.GlobalLock(handle)
         if not locked:
             KERNEL32.GlobalFree(handle)
-            raise RuntimeError("???????????")
+            raise RuntimeError('Unable to lock clipboard memory.')
         try:
             ctypes.memmove(locked, buffer, ctypes.sizeof(buffer))
         finally:
@@ -218,7 +218,7 @@ class ClipboardManager:
             USER32.EmptyClipboard()
             if not USER32.SetClipboardData(CF_UNICODETEXT, handle):
                 KERNEL32.GlobalFree(handle)
-                raise RuntimeError("????????")
+                raise RuntimeError('Unable to write clipboard data.')
         finally:
             USER32.CloseClipboard()
 
@@ -228,8 +228,8 @@ class OcrScanner:
         self.reader = RapidOCR()
 
     def scan_monitor(self, monitor: dict[str, int]) -> list[str]:
-        if monitor["width"] <= 0 or monitor["height"] <= 0:
-            raise ValueError("OCR ???????? 0?")
+        if monitor['width'] <= 0 or monitor['height'] <= 0:
+            raise ValueError('OCR region width and height must be greater than 0.')
 
         with mss.mss() as sct:
             grab = np.array(sct.grab(monitor))

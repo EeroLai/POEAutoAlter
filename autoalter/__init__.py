@@ -2,7 +2,7 @@ from .config_store import ConfigController
 from .runner import AutomationRunner
 from .models import AppConfig, AnchorInfo, ItemPoint, RelativeRegion, WindowInfo
 from .overlays import PointPicker, RegionPicker
-from .services import ClipboardManager, OcrScanner, TemplateLocator, WindowManager
+from .services import ClipboardManager, TemplateLocator, WindowManager
 from .text_utils import TextNormalizer, normalize_text, parse_target_list
 from .win32 import (
     FAST_POLL_INTERVAL,
