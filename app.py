@@ -1,15 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import ctypes
-from ctypes import wintypes
-import json
 import queue
-import random
-import re
 import sys
 import threading
 import time
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from tkinter import messagebox, scrolledtext, ttk
 
@@ -18,583 +13,38 @@ VENDOR_DIR = ROOT / ".vendor"
 if VENDOR_DIR.exists():
     sys.path.insert(0, str(VENDOR_DIR))
 
-import cv2
-import mss
-import numpy as np
 import pyautogui
 import tkinter as tk
-from opencc import OpenCC
-from rapidocr_onnxruntime import RapidOCR
+
+from autoalter import (
+    AppConfig,
+    ClipboardManager,
+    HOTKEY_ID_START,
+    HOTKEY_ID_STOP,
+    ItemPoint,
+    MOD_NOREPEAT,
+    MSG,
+    OcrScanner,
+    PM_REMOVE,
+    PointPicker,
+    RegionPicker,
+    RelativeRegion,
+    TextNormalizer,
+    USER32,
+    VK_F2,
+    VK_F3,
+    WM_HOTKEY,
+    WindowInfo,
+    WindowManager,
+    enable_dpi_awareness,
+)
+from autoalter.config_store import ConfigController
+from autoalter.runner import AutomationRunner
 
 
 CONFIG_PATH = ROOT / "config.json"
-OCR_SCORE_THRESHOLD = 0.25
-SW_RESTORE = 9
-CF_UNICODETEXT = 13
-GMEM_MOVEABLE = 0x0002
-MOD_NOREPEAT = 0x4000
-VK_F2 = 0x71
-VK_F3 = 0x72
-WM_HOTKEY = 0x0312
-PM_REMOVE = 0x0001
-HOTKEY_ID_STOP = 1
-HOTKEY_ID_START = 2
-FAST_POLL_INTERVAL = 0.01
-WINDOW_ACTIVATE_DELAY = 0.03
-MIN_CLIPBOARD_TIMEOUT = 0.08
-CLIPBOARD_EXTRA_DELAY = 0.03
-USER32 = ctypes.windll.user32
-KERNEL32 = ctypes.windll.kernel32
 
-USER32.OpenClipboard.argtypes = [wintypes.HWND]
-USER32.OpenClipboard.restype = wintypes.BOOL
-USER32.CloseClipboard.argtypes = []
-USER32.CloseClipboard.restype = wintypes.BOOL
-USER32.EmptyClipboard.argtypes = []
-USER32.EmptyClipboard.restype = wintypes.BOOL
-USER32.GetClipboardData.argtypes = [wintypes.UINT]
-USER32.GetClipboardData.restype = ctypes.c_void_p
-USER32.SetClipboardData.argtypes = [wintypes.UINT, ctypes.c_void_p]
-USER32.SetClipboardData.restype = ctypes.c_void_p
-USER32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
-USER32.RegisterHotKey.restype = wintypes.BOOL
-USER32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
-USER32.UnregisterHotKey.restype = wintypes.BOOL
-USER32.PeekMessageW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.UINT, wintypes.UINT]
-USER32.PeekMessageW.restype = wintypes.BOOL
-USER32.GetAsyncKeyState.argtypes = [ctypes.c_int]
-USER32.GetAsyncKeyState.restype = ctypes.c_short
-KERNEL32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
-KERNEL32.GlobalAlloc.restype = ctypes.c_void_p
-KERNEL32.GlobalLock.argtypes = [ctypes.c_void_p]
-KERNEL32.GlobalLock.restype = ctypes.c_void_p
-KERNEL32.GlobalUnlock.argtypes = [ctypes.c_void_p]
-KERNEL32.GlobalUnlock.restype = wintypes.BOOL
-KERNEL32.GlobalFree.argtypes = [ctypes.c_void_p]
-KERNEL32.GlobalFree.restype = ctypes.c_void_p
-
-
-class RECT(ctypes.Structure):
-    _fields_ = [
-        ("left", ctypes.c_long),
-        ("top", ctypes.c_long),
-        ("right", ctypes.c_long),
-        ("bottom", ctypes.c_long),
-    ]
-
-
-class POINT(ctypes.Structure):
-    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-
-class MSG(ctypes.Structure):
-    _fields_ = [
-        ("hwnd", wintypes.HWND),
-        ("message", wintypes.UINT),
-        ("wParam", wintypes.WPARAM),
-        ("lParam", wintypes.LPARAM),
-        ("time", wintypes.DWORD),
-        ("pt", POINT),
-    ]
-
-
-@dataclass
-class ItemPoint:
-    name: str
-    x: int
-    y: int
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "ItemPoint":
-        return cls(
-            name=str(data.get("name", "物品")),
-            x=int(data.get("x", 0)),
-            y=int(data.get("y", 0)),
-        )
-
-
-@dataclass
-class RelativeRegion:
-    left: int = 0
-    top: int = 0
-    width: int = 0
-    height: int = 0
-
-    @property
-    def has_area(self) -> bool:
-        return self.width > 0 and self.height > 0
-
-    @classmethod
-    def from_dict(cls, data: dict | None) -> "RelativeRegion":
-        data = data or {}
-        return cls(
-            left=int(data.get("left", 0)),
-            top=int(data.get("top", 0)),
-            width=int(data.get("width", 0)),
-            height=int(data.get("height", 0)),
-        )
-
-
-@dataclass
-class WindowInfo:
-    hwnd: int
-    title: str
-    left: int
-    top: int
-    width: int
-    height: int
-
-
-@dataclass
-class AnchorInfo:
-    left: int
-    top: int
-    width: int
-    height: int
-    score: float
-    window: WindowInfo
-
-
-@dataclass
-class AppConfig:
-    window_title: str = ""
-    detection_mode: str = "ocr"
-    hover_delay: float = 0.35
-    click_delay: float = 0.25
-    action_delay: float = 0.12
-    click_jitter: int = 2
-    hold_shift_loop: bool = False
-    cycle_delay: float = 0.8
-    target_text: str = ""
-    action_mode: str = "window"
-    action_x: int | None = None
-    action_y: int | None = None
-    ocr_region: RelativeRegion = field(default_factory=RelativeRegion)
-    item_points: list[ItemPoint] = field(default_factory=list)
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "AppConfig":
-        return cls(
-            window_title=str(data.get("window_title", "")),
-            detection_mode=str(data.get("detection_mode", "ocr")),
-            hover_delay=float(data.get("hover_delay", 0.35)),
-            click_delay=float(data.get("click_delay", 0.25)),
-            action_delay=float(data.get("action_delay", 0.12)),
-            click_jitter=int(data.get("click_jitter", 2)),
-            hold_shift_loop=bool(data.get("hold_shift_loop", False)),
-            cycle_delay=float(data.get("cycle_delay", 0.8)),
-            target_text=str(data.get("target_text", "")),
-            action_mode=str(data.get("action_mode", "window")),
-            action_x=data.get("action_x"),
-            action_y=data.get("action_y"),
-            ocr_region=RelativeRegion.from_dict(data.get("ocr_region")),
-            item_points=[ItemPoint.from_dict(item) for item in data.get("item_points", [])],
-        )
-
-
-def enable_dpi_awareness() -> None:
-    try:
-        USER32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-    except Exception:
-        try:
-            USER32.SetProcessDPIAware()
-        except Exception:
-            pass
-
-
-def normalize_text(text: str) -> str:
-    return re.sub(r"\s+", "", text or "").lower()
-
-
-def parse_target_list(raw_text: str) -> list[str]:
-    parts = re.split(r"[\r\n,，;；|]+", raw_text or "")
-    results: list[str] = []
-    seen: set[str] = set()
-    for part in parts:
-        candidate = part.strip()
-        normalized = normalize_text(candidate)
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        results.append(candidate)
-    return results
-
-
-class TextNormalizer:
-    def __init__(self) -> None:
-        self.to_traditional = OpenCC("s2t")
-        self.to_simplified = OpenCC("t2s")
-
-    def forms(self, text: str) -> set[str]:
-        cleaned = normalize_text(text)
-        if not cleaned:
-            return set()
-        forms = {cleaned}
-        forms.add(self.to_traditional.convert(cleaned))
-        forms.add(self.to_simplified.convert(cleaned))
-        return {item for item in forms if item}
-
-    def matches(self, target: str, texts: list[str]) -> tuple[bool, str]:
-        target_forms = self.forms(target)
-        if not target_forms:
-            return False, ""
-
-        for text in texts:
-            candidate_forms = self.forms(text)
-            for candidate in candidate_forms:
-                if any(target_form in candidate for target_form in target_forms):
-                    return True, text
-
-        merged_forms = self.forms("".join(texts))
-        for candidate in merged_forms:
-            if any(target_form in candidate for target_form in target_forms):
-                return True, "".join(texts)
-
-        return False, ""
-
-    def matches_any(self, targets: list[str], texts: list[str]) -> tuple[bool, str, str]:
-        for target in targets:
-            matched, hit = self.matches(target, texts)
-            if matched:
-                return True, target, hit
-        return False, "", ""
-
-
-class WindowManager:
-    def __init__(self) -> None:
-        self.enum_callback_type = ctypes.WINFUNCTYPE(
-            ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p
-        )
-
-    def _window_from_handle(self, hwnd: int) -> WindowInfo | None:
-        if not USER32.IsWindowVisible(hwnd):
-            return None
-
-        length = USER32.GetWindowTextLengthW(hwnd)
-        if length <= 0:
-            return None
-
-        title_buffer = ctypes.create_unicode_buffer(length + 1)
-        USER32.GetWindowTextW(hwnd, title_buffer, length + 1)
-        title = title_buffer.value.strip()
-        if not title:
-            return None
-
-        client_rect = RECT()
-        if USER32.GetClientRect(hwnd, ctypes.byref(client_rect)):
-            origin = POINT(0, 0)
-            if USER32.ClientToScreen(hwnd, ctypes.byref(origin)):
-                width = int(client_rect.right - client_rect.left)
-                height = int(client_rect.bottom - client_rect.top)
-                if width >= 100 and height >= 100:
-                    return WindowInfo(
-                        hwnd=int(hwnd),
-                        title=title,
-                        left=int(origin.x),
-                        top=int(origin.y),
-                        width=width,
-                        height=height,
-                    )
-
-        rect = RECT()
-        if not USER32.GetWindowRect(hwnd, ctypes.byref(rect)):
-            return None
-
-        width = int(rect.right - rect.left)
-        height = int(rect.bottom - rect.top)
-        if width < 100 or height < 100:
-            return None
-
-        return WindowInfo(
-            hwnd=int(hwnd),
-            title=title,
-            left=int(rect.left),
-            top=int(rect.top),
-            width=width,
-            height=height,
-        )
-
-    def list_windows(self) -> list[WindowInfo]:
-        windows: list[WindowInfo] = []
-
-        @self.enum_callback_type
-        def callback(hwnd, _lparam):
-            window = self._window_from_handle(int(hwnd))
-            if window is not None:
-                windows.append(window)
-            return True
-
-        USER32.EnumWindows(callback, 0)
-        return windows
-
-    def get_foreground_window(self) -> WindowInfo | None:
-        hwnd = int(USER32.GetForegroundWindow())
-        if not hwnd:
-            return None
-        return self._window_from_handle(hwnd)
-
-    def find_window(self, title_query: str) -> WindowInfo:
-        query = title_query.strip().lower()
-        if not query:
-            raise ValueError("請輸入視窗標題關鍵字。")
-
-        foreground = self.get_foreground_window()
-        if foreground and query in foreground.title.lower():
-            return foreground
-
-        matches = [window for window in self.list_windows() if query in window.title.lower()]
-        if not matches:
-            raise RuntimeError(f"找不到標題包含「{title_query}」的視窗。")
-
-        matches.sort(key=lambda item: (len(item.title), item.title.lower()))
-        return matches[0]
-
-    def activate(self, hwnd: int) -> None:
-        USER32.ShowWindow(hwnd, SW_RESTORE)
-        USER32.SetForegroundWindow(hwnd)
-
-
-class TemplateLocator:
-    def __init__(self) -> None:
-        self.cache: dict[str, np.ndarray] = {}
-
-    def load_template(self, image_path: str) -> np.ndarray:
-        path = str(Path(image_path).expanduser().resolve())
-        cached = self.cache.get(path)
-        if cached is not None:
-            return cached
-
-        data = np.fromfile(path, dtype=np.uint8)
-        if data.size == 0:
-            raise RuntimeError(f"讀不到圖片檔案: {path}")
-
-        image = cv2.imdecode(data, cv2.IMREAD_COLOR)
-        if image is None:
-            raise RuntimeError(f"無法載入圖片: {path}")
-
-        self.cache[path] = image
-        return image
-
-    def match_template(
-        self, screenshot: np.ndarray, template: np.ndarray
-    ) -> tuple[tuple[int, int], float]:
-        source_gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
-        template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-
-        if (
-            source_gray.shape[0] < template_gray.shape[0]
-            or source_gray.shape[1] < template_gray.shape[1]
-        ):
-            raise RuntimeError("按鈕圖片比視窗截圖還大，無法比對。")
-
-        result = cv2.matchTemplate(source_gray, template_gray, cv2.TM_CCOEFF_NORMED)
-        _min_val, max_val, _min_loc, max_loc = cv2.minMaxLoc(result)
-        return (int(max_loc[0]), int(max_loc[1])), float(max_val)
-
-    def locate(self, window: WindowInfo, image_path: str, threshold: float) -> AnchorInfo:
-        template = self.load_template(image_path)
-        monitor = {
-            "left": window.left,
-            "top": window.top,
-            "width": window.width,
-            "height": window.height,
-        }
-
-        with mss.mss() as sct:
-            screenshot = np.array(sct.grab(monitor))
-
-        screenshot_bgr = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2BGR)
-        (match_x, match_y), score = self.match_template(screenshot_bgr, template)
-        if score < threshold:
-            raise RuntimeError(f"找不到按鈕圖片，最高相似度只有 {score:.3f}。")
-
-        return AnchorInfo(
-            left=window.left + match_x,
-            top=window.top + match_y,
-            width=int(template.shape[1]),
-            height=int(template.shape[0]),
-            score=score,
-            window=window,
-        )
-
-
-class ClipboardManager:
-    def open_clipboard(self) -> None:
-        for _ in range(10):
-            if USER32.OpenClipboard(0):
-                return
-            time.sleep(0.03)
-        raise RuntimeError("無法開啟剪貼簿。")
-
-    def get_text(self) -> str:
-        self.open_clipboard()
-        try:
-            handle = USER32.GetClipboardData(CF_UNICODETEXT)
-            if not handle:
-                return ""
-            locked = KERNEL32.GlobalLock(handle)
-            if not locked:
-                return ""
-            try:
-                return ctypes.wstring_at(locked)
-            finally:
-                KERNEL32.GlobalUnlock(handle)
-        finally:
-            USER32.CloseClipboard()
-
-    def set_text(self, text: str) -> None:
-        buffer = ctypes.create_unicode_buffer(text)
-        handle = KERNEL32.GlobalAlloc(GMEM_MOVEABLE, ctypes.sizeof(buffer))
-        if not handle:
-            raise RuntimeError("無法配置剪貼簿記憶體。")
-
-        locked = KERNEL32.GlobalLock(handle)
-        if not locked:
-            KERNEL32.GlobalFree(handle)
-            raise RuntimeError("無法鎖定剪貼簿記憶體。")
-        try:
-            ctypes.memmove(locked, buffer, ctypes.sizeof(buffer))
-        finally:
-            KERNEL32.GlobalUnlock(handle)
-
-        self.open_clipboard()
-        try:
-            USER32.EmptyClipboard()
-            if not USER32.SetClipboardData(CF_UNICODETEXT, handle):
-                KERNEL32.GlobalFree(handle)
-                raise RuntimeError("無法寫入剪貼簿。")
-        finally:
-            USER32.CloseClipboard()
-
-
-class OcrScanner:
-    def __init__(self) -> None:
-        self.reader = RapidOCR()
-
-    def scan_monitor(self, monitor: dict[str, int]) -> list[str]:
-        if monitor["width"] <= 0 or monitor["height"] <= 0:
-            raise ValueError("OCR 區域尺寸必須大於 0。")
-
-        with mss.mss() as sct:
-            grab = np.array(sct.grab(monitor))
-
-        source = cv2.cvtColor(grab, cv2.COLOR_BGRA2BGR)
-        enlarged = cv2.resize(source, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-        gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (3, 3), 0)
-        _threshold, binary = cv2.threshold(
-            gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-        )
-        variants = [enlarged, cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)]
-
-        results: list[str] = []
-        seen: set[str] = set()
-        for image in variants:
-            result, _ = self.reader(image)
-            if not result:
-                continue
-            for item in result:
-                _box, text, score = item
-                if float(score) < OCR_SCORE_THRESHOLD:
-                    continue
-                normalized = normalize_text(str(text))
-                if not normalized or normalized in seen:
-                    continue
-                seen.add(normalized)
-                results.append(str(text))
-        return results
-
-class ScreenOverlayBase(tk.Toplevel):
-    def __init__(self, master: tk.Tk, title: str) -> None:
-        super().__init__(master)
-        with mss.mss() as sct:
-            monitor = sct.monitors[0]
-
-        self.offset_left = monitor["left"]
-        self.offset_top = monitor["top"]
-        self.geometry(
-            f"{monitor['width']}x{monitor['height']}+{self.offset_left}+{self.offset_top}"
-        )
-        self.overrideredirect(True)
-        self.attributes("-topmost", True)
-        self.attributes("-alpha", 0.28)
-        self.configure(bg="#111111")
-
-        self.canvas = tk.Canvas(self, bg="#111111", highlightthickness=0, cursor="crosshair")
-        self.canvas.pack(fill="both", expand=True)
-        self.canvas.create_text(
-            24,
-            24,
-            anchor="nw",
-            fill="#ffffff",
-            font=("Microsoft JhengHei UI", 14, "bold"),
-            text=title,
-        )
-
-        self.bind("<Escape>", lambda _: self.destroy())
-        self.focus_force()
-        self.grab_set()
-
-
-class PointPicker(ScreenOverlayBase):
-    def __init__(self, master: tk.Tk, title: str, on_pick) -> None:
-        super().__init__(master, title)
-        self.on_pick = on_pick
-        self.canvas.bind("<Button-1>", self.pick)
-
-    def pick(self, event) -> None:
-        x = int(event.x_root)
-        y = int(event.y_root)
-        self.destroy()
-        self.on_pick(x, y)
-
-
-class RegionPicker(ScreenOverlayBase):
-    def __init__(self, master: tk.Tk, title: str, on_pick) -> None:
-        super().__init__(master, title)
-        self.on_pick = on_pick
-        self.start_x = 0
-        self.start_y = 0
-        self.preview_id = None
-        self.canvas.bind("<ButtonPress-1>", self.start_drag)
-        self.canvas.bind("<B1-Motion>", self.update_drag)
-        self.canvas.bind("<ButtonRelease-1>", self.finish_drag)
-
-    def start_drag(self, event) -> None:
-        self.start_x = event.x_root
-        self.start_y = event.y_root
-        if self.preview_id is not None:
-            self.canvas.delete(self.preview_id)
-        self.preview_id = self.canvas.create_rectangle(
-            event.x,
-            event.y,
-            event.x,
-            event.y,
-            outline="#20d5ff",
-            width=2,
-            dash=(4, 4),
-        )
-
-    def update_drag(self, event) -> None:
-        if self.preview_id is None:
-            return
-        self.canvas.coords(
-            self.preview_id,
-            self.start_x - self.offset_left,
-            self.start_y - self.offset_top,
-            event.x_root - self.offset_left,
-            event.y_root - self.offset_top,
-        )
-
-    def finish_drag(self, event) -> None:
-        left = min(self.start_x, event.x_root)
-        top = min(self.start_y, event.y_root)
-        width = abs(event.x_root - self.start_x)
-        height = abs(event.y_root - self.start_y)
-        self.destroy()
-        if width < 5 or height < 5:
-            return
-        self.on_pick(left, top, width, height)
+CONFIG_PATH = ROOT / "config.json"
 
 
 class AutomationApp(tk.Tk):
@@ -612,6 +62,8 @@ class AutomationApp(tk.Tk):
         self.window_manager = WindowManager()
         self.clipboard = ClipboardManager()
         self.scanner = OcrScanner()
+        self.config_controller = ConfigController(self, CONFIG_PATH)
+        self.runner = AutomationRunner(self)
         self.queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.worker: threading.Thread | None = None
         self.stop_event = threading.Event()
@@ -622,6 +74,7 @@ class AutomationApp(tk.Tk):
         self.shift_loop_key_down = False
         self.shift_action_primed = False
         self.item_points: list[ItemPoint] = []
+        self.current_runtime_config: AppConfig | None = None
 
         self.window_title_var = tk.StringVar(value="Path of Exile")
         self.detection_mode_var = tk.StringVar(value="ocr")
@@ -636,6 +89,7 @@ class AutomationApp(tk.Tk):
         self.click_delay_var = tk.StringVar(value="0.25")
         self.action_delay_var = tk.StringVar(value="0.12")
         self.click_jitter_var = tk.StringVar(value="2")
+        self.human_delay_var = tk.BooleanVar(value=True)
         self.shift_loop_var = tk.BooleanVar(value=False)
         self.cycle_delay_var = tk.StringVar(value="0.8")
         self.status_var = tk.StringVar(value="待命")
@@ -775,10 +229,15 @@ class AutomationApp(tk.Tk):
         ttk.Entry(setup_frame, textvariable=self.cycle_delay_var, width=10).grid(
             row=7, column=4, sticky="ew", padx=(0, 8)
         )
+        ttk.Checkbutton(
+            setup_frame,
+            text="人性化延遲(+0.01~0.05秒)",
+            variable=self.human_delay_var,
+        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(10, 0))
         ttk.Label(
             setup_frame,
-            text="F2 \u53ef\u5168\u57df\u7acb\u5373\u505c\u6b62\uff0cF3 \u53ef\u5168\u57df\u958b\u59cb\uff1b\u9ede\u64ca\u6d6e\u52d5\u53ea\u6703\u5f71\u97ff\u5de6\u53f3\u9375\uff0c\u4e0d\u5f71\u97ff hover \u5224\u65b7\u3002",
-        ).grid(row=7, column=4, columnspan=4, sticky="w")
+            text="F2 可全域立即停止，F3 可全域開始；點擊浮動只會影響左右鍵，不影響 hover 判斷。",
+        ).grid(row=8, column=3, columnspan=5, sticky="w", pady=(10, 0))
 
         items_frame = ttk.LabelFrame(main, text="物品點位", padding=14)
         items_frame.grid(row=2, column=0, sticky="ew", pady=(12, 0))
@@ -869,71 +328,13 @@ class AutomationApp(tk.Tk):
             messagebox.showerror("視窗測試失敗", str(exc))
 
     def load_config(self) -> None:
-        if not CONFIG_PATH.exists():
-            return
-        try:
-            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            config = AppConfig.from_dict(data)
-        except Exception:
-            return
-
-        legacy_anchor_x = data.get("anchor_x")
-        legacy_anchor_y = data.get("anchor_y")
-        if legacy_anchor_x is not None and legacy_anchor_y is not None:
-            config.item_points = [
-                ItemPoint(name=item.name, x=item.x + int(legacy_anchor_x), y=item.y + int(legacy_anchor_y))
-                for item in config.item_points
-            ]
-            if config.item_points:
-                self.append_log("已將舊版物品點設定轉換為視窗相對座標。")
-
-        if config.action_mode == "anchor" and config.action_x is not None and config.action_y is not None:
-            if legacy_anchor_x is not None and legacy_anchor_y is not None:
-                config.action_x += int(legacy_anchor_x)
-                config.action_y += int(legacy_anchor_y)
-                config.action_mode = "window"
-                self.append_log("已將舊版定位點設定轉換為視窗相對座標。")
-
-        if config.window_title:
-            self.window_title_var.set(config.window_title)
-        self.detection_mode_var.set(config.detection_mode if config.detection_mode in {"ocr", "clipboard"} else "ocr")
-        self.target_text_var.set(config.target_text)
-        self.action_x_var.set("" if config.action_x is None else str(config.action_x))
-        self.action_y_var.set("" if config.action_y is None else str(config.action_y))
-        self.region_left_var.set(str(config.ocr_region.left))
-        self.region_top_var.set(str(config.ocr_region.top))
-        self.region_width_var.set(str(config.ocr_region.width))
-        self.region_height_var.set(str(config.ocr_region.height))
-        self.hover_delay_var.set(str(config.hover_delay))
-        self.click_delay_var.set(str(config.click_delay))
-        self.action_delay_var.set(str(config.action_delay))
-        self.click_jitter_var.set(str(config.click_jitter))
-        self.shift_loop_var.set(config.hold_shift_loop)
-        self.cycle_delay_var.set(str(config.cycle_delay))
-        self.item_points = list(config.item_points)
-        self.refresh_item_listbox()
+        self.config_controller.load()
 
     def save_config(self) -> None:
-        try:
-            config = self.collect_config(
-                require_target=False,
-                require_action=False,
-                require_items=False,
-                require_ocr=False,
-            )
-        except Exception:
-            return
-
-        CONFIG_PATH.write_text(
-            json.dumps(asdict(config), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        self.config_controller.save()
 
     def parse_optional_int(self, raw_value: str) -> int | None:
-        value = raw_value.strip()
-        if not value:
-            return None
-        return int(value)
+        return self.config_controller.parse_optional_int(raw_value)
 
     def collect_config(
         self,
@@ -943,68 +344,18 @@ class AutomationApp(tk.Tk):
         require_items: bool = True,
         require_ocr: bool = True,
     ) -> AppConfig:
-        try:
-            config = AppConfig(
-                window_title=self.window_title_var.get().strip(),
-                detection_mode=self.detection_mode_var.get().strip() or "ocr",
-                hover_delay=float(self.hover_delay_var.get()),
-                click_delay=float(self.click_delay_var.get()),
-                action_delay=float(self.action_delay_var.get()),
-                click_jitter=int(self.click_jitter_var.get()),
-                hold_shift_loop=bool(self.shift_loop_var.get()),
-                cycle_delay=float(self.cycle_delay_var.get()),
-                target_text=self.target_text_var.get().strip(),
-                action_mode="window",
-                action_x=self.parse_optional_int(self.action_x_var.get()),
-                action_y=self.parse_optional_int(self.action_y_var.get()),
-                ocr_region=RelativeRegion(
-                    left=int(self.region_left_var.get() or 0),
-                    top=int(self.region_top_var.get() or 0),
-                    width=int(self.region_width_var.get() or 0),
-                    height=int(self.region_height_var.get() or 0),
-                ),
-                item_points=list(self.item_points),
-            )
-        except ValueError as exc:
-            raise ValueError("數值欄位格式不正確。") from exc
-
-        if not config.window_title:
-            raise ValueError("請輸入視窗標題關鍵字。")
-        if config.detection_mode not in {"ocr", "clipboard"}:
-            raise ValueError("判斷方式不正確。")
-        if config.hover_delay < 0:
-            raise ValueError("hover 等待時間不能小於 0。")
-        if config.click_delay < 0:
-            raise ValueError("點擊間隔不能小於 0。")
-        if config.action_delay < 0:
-            raise ValueError("取用等待不能小於 0。")
-        if config.click_jitter < 0:
-            raise ValueError("點擊浮動不能小於 0。")
-        if config.cycle_delay < 0:
-            raise ValueError("每輪間隔不能小於 0。")
-        if require_target and not parse_target_list(config.target_text):
-            raise ValueError("請輸入至少一個要判斷的目標文字。")
-        if config.action_mode != "window":
-            raise ValueError("定位點模式不正確。")
-        if require_action and (config.action_x is None or config.action_y is None):
-            raise ValueError("請設定定位點。")
-        if require_items and not config.item_points:
-            raise ValueError("請至少新增一個物品點。")
-        if config.ocr_region.width < 0 or config.ocr_region.height < 0:
-            raise ValueError("OCR 區域寬高不能是負數。")
-        if config.detection_mode == "ocr" and require_ocr and not config.ocr_region.has_area:
-            raise ValueError("OCR 模式需要設定 OCR 區域。")
-
-        return config
+        return self.config_controller.collect_config(
+            require_target=require_target,
+            require_action=require_action,
+            require_items=require_items,
+            require_ocr=require_ocr,
+        )
 
     def refresh_item_listbox(self) -> None:
-        self.item_listbox.delete(0, "end")
-        for item in self.item_points:
-            self.item_listbox.insert("end", f"{item.name:<8} window=({item.x}, {item.y})")
+        self.config_controller.refresh_item_listbox()
 
     def match_target_list(self, raw_targets: str, texts: list[str]) -> tuple[bool, str, str]:
-        targets = parse_target_list(raw_targets)
-        return self.normalizer.matches_any(targets, texts)
+        return self.runner.match_target_list(raw_targets, texts)
 
     def set_status(self, message: str) -> None:
         self.status_var.set(message)
@@ -1087,6 +438,7 @@ class AutomationApp(tk.Tk):
         if self.stop_event.is_set():
             return False
         self.stop_event.set()
+        self.current_runtime_config = None
         self.release_shift_for_loop()
         self.shift_action_primed = False
         self.queue_status("\u505c\u6b62\u4e2d")
@@ -1173,16 +525,7 @@ class AutomationApp(tk.Tk):
         self.after(180, launch)
 
     def resolve_window(self, config: AppConfig, activate_window: bool = True) -> WindowInfo:
-        window = self.window_manager.find_window(config.window_title)
-        if activate_window:
-            foreground = USER32.GetForegroundWindow()
-            if int(foreground or 0) != window.hwnd:
-                self.window_manager.activate(window.hwnd)
-                time.sleep(WINDOW_ACTIVATE_DELAY)
-        self.queue_anchor(
-            f"{window.title} | window=({window.left}, {window.top}, {window.width}x{window.height})"
-        )
-        return window
+        return self.runner.resolve_window(config, activate_window=activate_window)
 
     def pick_action_point(self) -> None:
         try:
@@ -1305,15 +648,10 @@ class AutomationApp(tk.Tk):
         self.append_log("已清空所有物品點。")
 
     def absolute_point(self, window: WindowInfo, offset_x: int, offset_y: int) -> tuple[int, int]:
-        return window.left + offset_x, window.top + offset_y
+        return self.runner.absolute_point(window, offset_x, offset_y)
 
     def absolute_region(self, window: WindowInfo, region: RelativeRegion) -> dict[str, int]:
-        return {
-            "left": window.left + region.left,
-            "top": window.top + region.top,
-            "width": region.width,
-            "height": region.height,
-        }
+        return self.runner.absolute_region(window, region)
 
     def press_shift_for_loop(self) -> None:
         if self.shift_loop_key_down:
@@ -1356,134 +694,21 @@ class AutomationApp(tk.Tk):
         return "剪貼簿 Ctrl+C" if mode == "clipboard" else "OCR"
 
     def copy_item_text(self, config: AppConfig) -> str:
-        sentinel = f"__AUTOALTER__{time.time_ns()}__"
-        self.clipboard.set_text(sentinel)
-        pyautogui.keyDown("ctrl")
-        pyautogui.press("c")
-        pyautogui.keyUp("ctrl")
-        timeout = time.perf_counter() + max(MIN_CLIPBOARD_TIMEOUT, config.click_delay + CLIPBOARD_EXTRA_DELAY)
-        while time.perf_counter() < timeout:
-            if self.stop_event.is_set():
-                return ""
-            copied = self.clipboard.get_text().strip()
-            if copied and copied != sentinel:
-                return copied
-            time.sleep(FAST_POLL_INTERVAL)
-        return ""
+        return self.runner.copy_item_text(config)
 
     def run_detection_check(
         self, config: AppConfig, window: WindowInfo, item: ItemPoint, stage: str
     ) -> tuple[bool, str, str]:
-        item_x, item_y = self.absolute_point(window, item.x, item.y)
-        pyautogui.moveTo(item_x, item_y, duration=0)
-        self.queue_log(f"{stage} hover {item.name}: ({item_x}, {item_y})")
-        if self.wait_with_pause(config.hover_delay):
-            return False, "", ""
-
-        texts: list[str] = []
-        if config.detection_mode == "clipboard":
-            copied = self.copy_item_text(config)
-            if copied:
-                texts = [copied]
-                self.queue_log(f"{stage} 剪貼簿[{item.name}]: {copied[:160]}")
-            else:
-                self.queue_log(f"{stage} 剪貼簿[{item.name}]: 沒抓到內容")
-        else:
-            region = self.absolute_region(window, config.ocr_region)
-            texts = self.scanner.scan_monitor(region)
-            if texts:
-                self.queue_log(f"{stage} OCR[{item.name}]: {' | '.join(texts)}")
-            else:
-                self.queue_log(f"{stage} OCR[{item.name}]: 沒抓到文字")
-
-        return self.match_target_list(config.target_text, texts)
+        return self.runner.run_detection_check(config, window, item, stage)
 
     def perform_item_action(self, config: AppConfig, window: WindowInfo, item: ItemPoint) -> bool:
-        item_x, item_y = self.absolute_point(window, item.x, item.y)
-
-        if config.hold_shift_loop:
-            if config.action_x is None or config.action_y is None:
-                return False
-
-            action_x = window.left + config.action_x
-            action_y = window.top + config.action_y
-
-            if not self.shift_action_primed:
-                self.release_shift_for_loop()
-                actual_action_x, actual_action_y = self.click_point(
-                    action_x,
-                    action_y,
-                    button="right",
-                    jitter=config.click_jitter,
-                )
-                self.shift_action_primed = True
-                self.queue_log(
-                    f"\u6574\u6bb5 Shift \u6a21\u5f0f\u5df2\u53d6\u7528\u5b9a\u4f4d\u9ede: ({actual_action_x}, {actual_action_y}) | base=({action_x}, {action_y})"
-                )
-                if self.wait_with_pause(config.action_delay):
-                    return True
-
-            self.sync_shift_for_loop(config)
-            actual_item_x, actual_item_y = self.click_point(
-                item_x,
-                item_y,
-                button="left",
-                jitter=config.click_jitter,
-            )
-            self.queue_log(
-                f"\u5c0d {item.name} \u6309 Shift+\u5de6\u9375: ({actual_item_x}, {actual_item_y}) | base=({item_x}, {item_y})"
-            )
-            return self.wait_with_pause(config.click_delay)
-
-        if config.action_x is None or config.action_y is None:
-            return False
-
-        action_x = window.left + config.action_x
-        action_y = window.top + config.action_y
-
-        actual_action_x, actual_action_y = self.click_point(
-            action_x,
-            action_y,
-            button="right",
-            jitter=config.click_jitter,
-        )
-        self.queue_log(
-            f"\u5c0d\u5b9a\u4f4d\u9ede\u6309\u53f3\u9375: ({actual_action_x}, {actual_action_y}) | base=({action_x}, {action_y})"
-        )
-        if self.wait_with_pause(config.action_delay):
-            return True
-
-        actual_item_x, actual_item_y = self.click_point(
-            item_x,
-            item_y,
-            button="left",
-            jitter=config.click_jitter,
-        )
-        self.queue_log(
-            f"\u5c0d {item.name} \u6309\u5de6\u9375: ({actual_item_x}, {actual_item_y}) | base=({item_x}, {item_y})"
-        )
-        return self.wait_with_pause(config.click_delay)
+        return self.runner.perform_item_action(config, window, item)
 
     def wait_with_pause(self, seconds: float) -> bool:
-        end_time = time.perf_counter() + seconds
-        while time.perf_counter() < end_time:
-            if self.stop_event.is_set():
-                self.release_shift_for_loop()
-                return True
-            if self.stop_event.is_set():
-                self.release_shift_for_loop()
-                return True
-            remaining = end_time - time.perf_counter()
-            if remaining <= 0:
-                break
-            time.sleep(min(FAST_POLL_INTERVAL, remaining))
-        return False
+        return self.runner.wait_with_pause(seconds)
 
     def pause_due_to_match(self, item: ItemPoint, target: str, hit: str) -> None:
-        self.release_shift_for_loop()
-        self.stop_event.set()
-        self.queue_status("\u547d\u4e2d\u5f8c\u505c\u6b62")
-        self.queue_log(f"{item.name} \u547d\u4e2d\u76ee\u6a19\u6587\u5b57 [{target}]\uff0c\u5df2\u505c\u6b62: {hit}")
+        self.runner.pause_due_to_match(item, target, hit)
 
     def test_ocr(self) -> None:
         try:
@@ -1549,6 +774,7 @@ class AutomationApp(tk.Tk):
 
         self.save_config()
         self.stop_event.clear()
+        self.current_runtime_config = config
         self.release_shift_for_loop()
         self.shift_action_primed = False
         self.worker = threading.Thread(target=self.run_automation, args=(config,), daemon=True)
@@ -1557,6 +783,8 @@ class AutomationApp(tk.Tk):
         self.append_log(
             f"自動流程已開始，判斷方式={self.detection_mode_label(config.detection_mode)}，取用等待={config.action_delay}s，點擊浮動={config.click_jitter}px。"
         )
+        if config.human_delay:
+            self.append_log("已啟用人性化延遲：每次等待會額外隨機增加 0.01~0.05 秒。")
         if self.hotkey_registered or self.start_hotkey_registered:
             self.append_log("F2 \u53ef\u5168\u57df\u7acb\u5373\u505c\u6b62\uff0cF3 \u53ef\u5168\u57df\u958b\u59cb\u3002")
         if config.action_x is None or config.action_y is None:
@@ -1569,64 +797,11 @@ class AutomationApp(tk.Tk):
             self.set_status("待命")
 
     def run_automation(self, config: AppConfig) -> None:
-        cycle = 0
-        try:
-            while not self.stop_event.is_set():
-                self.sync_shift_for_loop(config)
-                cycle += 1
-                self.queue_status(f"\u5de1\u6aa2\u4e2d\uff0c\u7b2c {cycle} \u8f2a")
-                window = self.resolve_window(config)
-                self.queue_log(
-                    f"\u7b2c {cycle} \u8f2a\u958b\u59cb\uff0c\u8996\u7a97=({window.left}, {window.top}, {window.width}x{window.height})"
-                )
-
-                matched_this_cycle = False
-                for item in config.item_points:
-                    if self.stop_event.is_set():
-                        break
-
-                    self.sync_shift_for_loop(config)
-                    matched, target, hit = self.run_detection_check(config, window, item, "\u64cd\u4f5c\u524d")
-                    if matched:
-                        self.pause_due_to_match(item, target, hit)
-                        matched_this_cycle = True
-                        break
-                    if self.stop_event.is_set():
-                        break
-
-                    if self.perform_item_action(config, window, item):
-                        break
-
-                    self.sync_shift_for_loop(config)
-                    matched, target, hit = self.run_detection_check(config, window, item, "\u64cd\u4f5c\u5f8c")
-                    if matched:
-                        self.pause_due_to_match(item, target, hit)
-                        matched_this_cycle = True
-                        break
-                    if self.stop_event.is_set():
-                        break
-
-                if self.stop_event.is_set():
-                    break
-                if matched_this_cycle:
-                    continue
-                if self.wait_with_pause(config.cycle_delay):
-                    break
-
-            self.queue_status("\u5df2\u505c\u6b62")
-            self.queue_log("\u81ea\u52d5\u6d41\u7a0b\u5df2\u7d50\u675f\u3002")
-        except pyautogui.FailSafeException:
-            self.queue_status("\u5b89\u5168\u66ab\u505c")
-            self.queue_log("\u6ed1\u9f20\u79fb\u5230\u5de6\u4e0a\u89d2\u89f8\u767c PyAutoGUI failsafe\uff0c\u6d41\u7a0b\u5df2\u505c\u6b62\u3002")
-        except Exception as exc:
-            self.queue_status("\u57f7\u884c\u5931\u6557")
-            self.queue_log(f"\u81ea\u52d5\u6d41\u7a0b\u5931\u6557: {exc}")
-        finally:
-            self.release_shift_for_loop()
-            self.shift_action_primed = False
+        self.runner.run_automation(config)
 
     def on_close(self) -> None:
         self.stop_event.set()
+        self.current_runtime_config = None
         self.release_shift_for_loop()
         self.shift_action_primed = False
         self.hotkey_monitor_stop.set()
