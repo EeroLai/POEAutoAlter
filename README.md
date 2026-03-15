@@ -1,26 +1,26 @@
 # POEAutoAlter
 
-POEAutoAlter is a Windows desktop automation tool for Path of Exile.
-It can scan item positions, detect text from either OCR or clipboard copy,
-and stop automatically when any target keyword is matched.
+POEAutoAlter is a Windows desktop automation tool for Path of Exile that automates Alteration Orb item rolling by using clipboard item text detection.
 
-## Features
+## Repo Description
 
-- Lock onto a game window by title
-- All coordinates are relative to the Path of Exile window
-- Multiple item points per scan cycle
-- Two detection modes:
-  - OCR
-  - Clipboard Ctrl+C
-- Multiple target keywords supported
-- Traditional/Simplified Chinese matching support
-- Optional right-click action point
-- Optional hold-Shift-through-loop mode for repeated item clicks
-- Global hotkeys:
-  - F2 to stop
-  - F3 to start
-- PyAutoGUI failsafe by moving the mouse to the top-left corner
-- Local settings are saved to `config.json`
+Clipboard-driven Path of Exile Alteration Orb automation tool with window monitoring, multi-item routing, and match-based stopping.
+
+## What It Does
+
+- Monitors the `Path of Exile` window automatically
+- Enables `Start` only when the game window is detected
+- Stops automatically if the monitored window disappears while running
+- Uses `Ctrl+C` item copy instead of OCR
+- Matches copied item text against one or more target keywords
+- Processes item points in order
+- Keeps working on `Item1` until it matches, then moves to `Item2`, then `Item3`, and so on
+- Stops when all configured item points are completed
+- Supports optional Alteration Orb position clicks
+- Supports optional hold-Shift mode for repeated crafting flow
+- Adds click jitter and optional humanized delay
+- Includes stale clipboard protection to avoid extra clicks when the item text has not updated yet
+- Supports Chinese and English UI
 
 ## Requirements
 
@@ -31,7 +31,7 @@ and stop automatically when any target keyword is matched.
 Recommended:
 
 - Run the game in windowed or borderless mode
-- If Path of Exile is started as Administrator, run this tool with the same privilege level
+- Run this tool with the same privilege level as the game
 
 ## Install
 
@@ -54,131 +54,121 @@ run.bat
 ## Quick Start
 
 1. Open Path of Exile.
-2. Launch this tool.
-3. Keep `Window Title Keyword` as `Path of Exile`, or use `Grab Foreground Window`.
-4. Click `Test Window` and confirm the correct game window is found.
-5. Choose a detection mode:
-   - `OCR`
-   - `Clipboard Ctrl+C`
-6. Enter one or more target keywords.
-   - Supported separators: comma, semicolon, or `|`
-   - Matching any keyword will stop the automation
-7. Optionally set `Right Click X/Y`.
-   - If left empty, the tool only performs hover + detection
-8. Optionally enable `Hold Shift Through Loop`.
-   - After the first right-click pickup, the tool keeps Shift held during the loop and uses left-click on items
-   - In clipboard mode, Shift remains held even while sending `Ctrl+C`
-9. Add one or more item points.
-10. Adjust timing settings if needed:
-   - `hover delay`
-   - `click delay`
-   - `click jitter`
-   - `cycle delay`
-11. Click `Start`.
+2. Launch the tool.
+3. Confirm the window status shows that `Path of Exile` is being monitored.
+4. Enter one or more target keywords.
+   Matching uses the clipboard item text and stops on any matched keyword.
+5. Set the Alteration Orb position.
+6. Add one or more item points.
+7. Adjust timing settings if needed.
+8. Click `Start` or press `F3`.
 
-## Detection Modes
+## Detection
 
-### OCR mode
-
-Use this when the item text appears in a fixed region of the game window.
-
-Setup:
-
-1. Click `Pick OCR Region`
-2. Drag over the text area inside the game window
-3. Click `Test Detection`
-
-Notes:
-
-- `OCR Left / Top / Width / Height` are relative to the game window
-- Smaller OCR regions are usually more reliable
-
-### Clipboard Ctrl+C mode
-
-Use this when hovering an item and pressing `Ctrl+C` copies item text to the clipboard.
+This project currently uses clipboard detection only.
 
 Flow:
 
-1. Move to an item point
+1. Move the cursor to an item point
 2. Send `Ctrl+C`
-3. Read clipboard text
-4. Match against the target keyword list
+3. Read the copied item text from the clipboard
+4. Match the result against the target keyword list
 
-Notes:
+Supported separators for the target keyword list:
 
-- This mode does not depend on the OCR region
-- If clipboard reads are unstable, increase `hover delay` or `click delay`
+- `,`
+- `;`
+- `|`
 
 ## Automation Flow
 
-Each cycle works like this:
+For each configured item point:
 
-1. Resolve the Path of Exile window
-2. Move to an item point
-3. Run a detection check before clicking
-4. If a keyword is matched, stop immediately
-5. If not matched:
-   - Normal mode: if a right-click point is set, right-click that point and left-click the item
-   - Hold-Shift mode: right-click the action point once, then keep Shift held and continue left-clicking items
-   - If no right-click point is set, skip the click step
-6. Run detection again
-7. Continue to the next item or next cycle
+1. Hover the item
+2. Copy item text with `Ctrl+C`
+3. Check for a target keyword
+4. If matched, mark that item point as complete and move to the next item point
+5. If not matched, use the Alteration Orb position and click the item
+6. Copy again and re-check
+7. If the copied text is still identical to the previous result, wait briefly and re-check instead of immediately adding another click
+
+When all item points are completed, the run stops.
+
+## Window Monitoring
+
+The app checks for the `Path of Exile` window once per second.
+
+Behavior:
+
+- If the window is found, `Start` is enabled
+- If the window is not found, `Start` is disabled
+- If the window disappears during a run, the automation stops immediately
 
 ## Coordinate System
 
-All coordinates are relative to the top-left corner of the Path of Exile window:
+All configured positions are relative to the top-left corner of the monitored `Path of Exile` window:
 
-- Right-click point
+- Alteration Orb position
 - Item points
-- OCR region
 
-This keeps the setup stable even when the game window moves.
+## Timing Options
+
+- `Humanized delay`: adds a small random extra delay to waits
+- `Hover delay`: delay before clipboard reading after hover
+- `Click delay`: delay after an item click
+- `Pickup delay`: delay after picking the Alteration Orb
+- `Click jitter`: random click offset in pixels
+- `Cycle delay`: kept for compatibility, but the current flow finishes after all configured item points are processed
+
+## Shift Mode
+
+If `Hold Shift through loop` is enabled:
+
+- The tool primes the Alteration Orb action once
+- Keeps Shift held during the item processing flow
+- Releases Shift on stop, on match-stop, or on close
 
 ## Hotkeys and Safety
 
 - `F2`: stop
 - `F3`: start
-- Mouse to top-left corner: trigger PyAutoGUI failsafe
+- Move the mouse to the top-left corner to trigger PyAutoGUI failsafe
 
 ## Local Config
 
-The app stores local runtime settings in `config.json`, including:
+Local settings are stored in `config.json`.
 
-- window title
-- detection mode
+Typical values include:
+
 - target keywords
-- right-click point
-- OCR region
+- Alteration Orb position
 - item points
-- timing and click jitter
+- timing settings
+- click jitter
+- language
 
-`config.json` is intentionally ignored by Git.
+`config.json` is ignored by Git.
 
 ## Troubleshooting
 
-### OCR does not detect text
+### The tool clicks too early after the item changes
 
-- Re-pick a smaller OCR region
-- Make sure the text really appears in a fixed part of the window
-- If Path of Exile supports item copy with `Ctrl+C`, prefer clipboard mode
+- Increase `Hover delay`
+- Increase `Pickup delay`
+- Keep the stale clipboard protection enabled by using the current version
 
-### F2 or F3 does not respond
+### Clipboard text does not update correctly
 
-- Make sure the tool is still running
+- Make sure the cursor is actually hovering the item
+- Make sure the game supports `Ctrl+C` item copy in the current state
 - Run the tool with the same privilege level as the game
 
-### Clipboard mode does not copy item text
+### Start is disabled
 
-- Make sure the cursor is really hovering the item
-- Increase `hover delay`, for example to `0.1` or `0.2`
-- Increase `click delay` slightly so the game has time to update
+- Make sure Path of Exile is open
+- Make sure the game window title still contains `Path of Exile`
+- Wait for the next 1-second monitor refresh or click `Refresh now`
 
 ## Notes
 
-This project is currently tailored to the existing Path of Exile workflow in this repo.
-If the workflow changes later, it can be extended further with:
-
-- different click sequences
-- more hotkeys
-- EXE packaging
-- GitHub Actions build automation
+This repository is focused on a practical Path of Exile Alteration Orb workflow rather than a generic game bot framework.
