@@ -55,6 +55,7 @@ class ConfigController:
         self.app.action_delay_var.set(str(config.action_delay))
         self.app.click_jitter_var.set(str(config.click_jitter))
         self.app.human_delay_var.set(config.human_delay)
+        self.app.realistic_mode_var.set(config.realistic_mode)
         self.app.shift_loop_var.set(config.hold_shift_loop)
         self.app.cycle_delay_var.set(str(config.cycle_delay))
         self.app.item_points = list(config.item_points)
@@ -99,6 +100,7 @@ class ConfigController:
                 action_delay=float(self.app.action_delay_var.get()),
                 click_jitter=int(self.app.click_jitter_var.get()),
                 human_delay=bool(self.app.human_delay_var.get()),
+                realistic_mode=bool(self.app.realistic_mode_var.get()),
                 hold_shift_loop=bool(self.app.shift_loop_var.get()),
                 cycle_delay=float(self.app.cycle_delay_var.get()),
                 target_text=self.app.target_text_var.get().strip(),

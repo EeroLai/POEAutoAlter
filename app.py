@@ -74,6 +74,9 @@ class AutomationApp(tk.Tk):
         self.current_runtime_config: AppConfig | None = None
         self.window_available = False
         self.last_window_signature = ""
+        self.raw_status_message = "待命"
+        self.raw_anchor_message = "尚未測試視窗"
+        self.log_history: list[tuple[str, str]] = []
 
         self.language_var = tk.StringVar(value="zh")
         self.language_display_var = tk.StringVar(value=LANGUAGE_NAMES["zh"])
@@ -91,6 +94,7 @@ class AutomationApp(tk.Tk):
         self.action_delay_var = tk.StringVar(value="0.12")
         self.click_jitter_var = tk.StringVar(value="2")
         self.human_delay_var = tk.BooleanVar(value=True)
+        self.realistic_mode_var = tk.BooleanVar(value=False)
         self.shift_loop_var = tk.BooleanVar(value=False)
         self.cycle_delay_var = tk.StringVar(value="0.8")
         self.status_var = tk.StringVar(value="待命")
@@ -122,25 +126,19 @@ class AutomationApp(tk.Tk):
         if next_language == self.language_var.get():
             return
         self.language_var.set(next_language)
-        current_status = self.status_var.get()
-        if current_status in {UI_TEXT["zh"]["status_idle"], UI_TEXT["en"]["status_idle"]}:
-            self.status_var.set(self.tr("status_idle"))
-        current_anchor = self.anchor_status_var.get()
-        if current_anchor in {UI_TEXT["zh"]["window_not_tested"], UI_TEXT["en"]["window_not_tested"]}:
-            self.anchor_status_var.set(self.tr("window_not_tested"))
+        self.status_var.set(self.tr_runtime(self.raw_status_message))
+        self.anchor_status_var.set(self.tr_runtime(self.raw_anchor_message))
         self.rebuild_ui()
 
     def rebuild_ui(self) -> None:
-        log_content = ""
-        if hasattr(self, "log_widget") and self.log_widget.winfo_exists():
-            log_content = self.log_widget.get("1.0", "end-1c")
         for child in self.winfo_children():
             child.destroy()
         self.build_ui()
         self.refresh_item_listbox()
-        if log_content:
+        if self.log_history:
             self.log_widget.configure(state="normal")
-            self.log_widget.insert("1.0", log_content)
+            for timestamp, message in self.log_history:
+                self.log_widget.insert("end", f"[{timestamp}] {self.tr_runtime(message)}\n")
             self.log_widget.see("end")
             self.log_widget.configure(state="disabled")
 
@@ -223,12 +221,17 @@ class AutomationApp(tk.Tk):
             setup_frame,
             text=t("human_delay"),
             variable=self.human_delay_var,
-        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ttk.Checkbutton(
+            setup_frame,
+            text=t("realistic_mode"),
+            variable=self.realistic_mode_var,
+        ).grid(row=4, column=2, columnspan=2, sticky="w", pady=(12, 0))
         ttk.Checkbutton(
             setup_frame,
             text=t("hold_shift_loop"),
             variable=self.shift_loop_var,
-        ).grid(row=4, column=3, columnspan=3, sticky="w", pady=(12, 0))
+        ).grid(row=4, column=4, columnspan=3, sticky="w", pady=(12, 0))
         ttk.Label(setup_frame, text=t("hover_delay")).grid(row=5, column=0, sticky="w", pady=(12, 0))
         ttk.Entry(setup_frame, textvariable=self.hover_delay_var, width=7).grid(
             row=6, column=0, sticky="ew", padx=(0, 8)
@@ -317,10 +320,10 @@ class AutomationApp(tk.Tk):
     def use_foreground_window(self) -> None:
         window = self.window_manager.get_foreground_window()
         if window is None:
-            messagebox.showerror("找不到視窗", "目前沒有可用的前景視窗。")
+            messagebox.showerror("Window not found", "No usable foreground window is available.")
             return
         self.window_title_var.set(window.title)
-        self.append_log(f"已帶入前景視窗: {window.title}")
+        self.append_log(f"Foreground window loaded: {window.title}")
 
     def test_window_lookup(self) -> None:
         try:
@@ -331,12 +334,12 @@ class AutomationApp(tk.Tk):
                 require_ocr=False,
             )
             window = self.window_manager.find_window(config.window_title)
-            self.anchor_status_var.set(
-                f"視窗: {window.title} ({window.left}, {window.top}, {window.width}x{window.height})"
+            self.set_anchor_status(
+                f"Detected: {window.title} ({window.left}, {window.top}, {window.width}x{window.height})"
             )
-            self.append_log(f"視窗定位成功: {window.title}")
+            self.append_log(f"Window located: {window.title}")
         except Exception as exc:
-            messagebox.showerror("視窗測試失敗", str(exc))
+            messagebox.showerror("Window test failed", str(exc))
 
     def update_window_controls(self) -> None:
         if hasattr(self, "start_button") and self.start_button.winfo_exists():
@@ -347,23 +350,23 @@ class AutomationApp(tk.Tk):
         if not window_title:
             available = False
             signature = ""
-            status_text = "未監視到目標視窗"
+            status_text = "Target window not detected"
         else:
             try:
                 window = self.window_manager.find_window(window_title)
                 available = True
                 signature = f"{window.title}|{window.left}|{window.top}|{window.width}|{window.height}"
-                status_text = f"已監視到: {window.title} ({window.left}, {window.top}, {window.width}x{window.height})"
+                status_text = f"Detected: {window.title} ({window.left}, {window.top}, {window.width}x{window.height})"
             except Exception:
                 available = False
                 signature = ""
-                status_text = f"未監視到: {window_title}"
+                status_text = f"Not detected: {window_title}"
 
         previous_available = self.window_available
         previous_signature = self.last_window_signature
         self.window_available = available
         self.last_window_signature = signature
-        self.anchor_status_var.set(status_text)
+        self.set_anchor_status(status_text)
         self.update_window_controls()
 
         changed = available != previous_available or signature != previous_signature
@@ -371,7 +374,7 @@ class AutomationApp(tk.Tk):
             self.append_log(status_text)
 
         if previous_available and not available:
-            self.request_stop("未監視到目標視窗，已停止。")
+            self.request_stop("Target window lost. Automation stopped.")
 
     def start_window_monitor(self) -> None:
         self.refresh_window_monitor(log_change=False)
@@ -407,11 +410,17 @@ class AutomationApp(tk.Tk):
     def match_target_list(self, raw_targets: str, texts: list[str]) -> tuple[bool, str, str]:
         return self.runner.match_target_list(raw_targets, texts)
 
+    def set_anchor_status(self, message: str) -> None:
+        self.raw_anchor_message = message
+        self.anchor_status_var.set(self.tr_runtime(message))
+
     def set_status(self, message: str) -> None:
+        self.raw_status_message = message
         self.status_var.set(self.tr_runtime(message))
 
     def append_log(self, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
+        self.log_history.append((timestamp, message))
         message = self.tr_runtime(message)
         self.log_widget.configure(state="normal")
         self.log_widget.insert("end", f"[{timestamp}] {message}\n")
@@ -536,7 +545,7 @@ class AutomationApp(tk.Tk):
             elif kind == "log":
                 self.append_log(payload)
             elif kind == "anchor":
-                self.anchor_status_var.set(payload)
+                self.set_anchor_status(payload)
             elif kind == "command" and payload == "start":
                 self.start_automation()
 
@@ -817,6 +826,8 @@ class AutomationApp(tk.Tk):
         )
         if config.human_delay:
             self.append_log("已啟用人性化延遲：每次等待會額外隨機增加 0.01~0.05 秒。")
+        if config.realistic_mode:
+            self.append_log("已啟用模擬真人模式：會加入短移動時間、假性停頓與更自然的重試節奏。")
         if self.hotkey_registered or self.start_hotkey_registered:
             self.append_log("F2 \u53ef\u5168\u57df\u7acb\u5373\u505c\u6b62\uff0cF3 \u53ef\u5168\u57df\u958b\u59cb\u3002")
         if config.action_x is None or config.action_y is None:

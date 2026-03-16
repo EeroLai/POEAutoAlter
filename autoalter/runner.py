@@ -20,6 +20,11 @@ HUMAN_DELAY_MIN = 0.01
 HUMAN_DELAY_MAX = 0.05
 STALE_TEXT_RECHECKS = 3
 STALE_TEXT_WAIT = 0.08
+REALISTIC_MOVE_MIN = 0.03
+REALISTIC_MOVE_MAX = 0.12
+REALISTIC_PAUSE_CHANCE = 0.18
+REALISTIC_PAUSE_MIN = 0.05
+REALISTIC_PAUSE_MAX = 0.18
 
 
 class AutomationRunner:
@@ -80,7 +85,8 @@ class AutomationRunner:
         stage: str,
     ) -> str:
         item_x, item_y = self.absolute_point(window, item.x, item.y)
-        pyautogui.moveTo(item_x, item_y, duration=0)
+        pyautogui.moveTo(item_x, item_y, duration=self.movement_duration(config))
+        self.maybe_realistic_pause(config)
         self.app.queue_log(f"{stage} hover {item.name}: ({item_x}, {item_y})")
         if self.wait_with_pause(config.hover_delay):
             return ""
@@ -108,11 +114,26 @@ class AutomationRunner:
             return x, y
         return x + random.randint(-jitter, jitter), y + random.randint(-jitter, jitter)
 
-    def click_point(self, x: int, y: int, button: str, jitter: int = 0) -> tuple[int, int]:
+    def movement_duration(self, config: AppConfig) -> float:
+        if getattr(config, "realistic_mode", False):
+            return random.uniform(REALISTIC_MOVE_MIN, REALISTIC_MOVE_MAX)
+        return 0.0
+
+    def maybe_realistic_pause(self, config: AppConfig) -> bool:
+        if not getattr(config, "realistic_mode", False):
+            return False
+        if random.random() >= REALISTIC_PAUSE_CHANCE:
+            return False
+        return self.wait_with_pause(random.uniform(REALISTIC_PAUSE_MIN, REALISTIC_PAUSE_MAX))
+
+    def click_point(self, x: int, y: int, button: str, jitter: int = 0, config: AppConfig | None = None) -> tuple[int, int]:
         click_x, click_y = self.jittered_point(x, y, jitter)
-        pyautogui.moveTo(click_x, click_y, duration=0)
+        move_duration = self.movement_duration(config) if config is not None else 0.0
+        pyautogui.moveTo(click_x, click_y, duration=move_duration)
         pyautogui.mouseDown(button=button)
         pyautogui.mouseUp(button=button)
+        if config is not None:
+            self.maybe_realistic_pause(config)
         return click_x, click_y
 
     def detection_mode_label(self, mode: str) -> str:
@@ -135,6 +156,7 @@ class AutomationRunner:
                     action_y,
                     button="right",
                     jitter=config.click_jitter,
+                    config=config,
                 )
                 self.app.shift_action_primed = True
                 self.app.queue_log(
@@ -149,6 +171,7 @@ class AutomationRunner:
                 item_y,
                 button="left",
                 jitter=config.click_jitter,
+                config=config,
             )
             self.app.queue_log(
                 f"\u5c0d {item.name} \u6309 Shift+\u5de6\u9375: ({actual_item_x}, {actual_item_y}) | base=({item_x}, {item_y})"
@@ -270,7 +293,10 @@ class AutomationRunner:
                             self.app.queue_log(
                                 f"{item.name} \u5167\u5bb9\u5c1a\u672a\u66f4\u65b0\uff0c\u7b49\u5f85\u5f8c\u91cd\u65b0\u78ba\u8a8d ({recheck_index + 1}/{STALE_TEXT_RECHECKS})\u3002"
                             )
-                            if self.wait_with_pause(max(config.action_delay, STALE_TEXT_WAIT)):
+                            extra_wait = max(config.action_delay, STALE_TEXT_WAIT)
+                            if getattr(config, "realistic_mode", False):
+                                extra_wait += random.uniform(0.03, 0.12)
+                            if self.wait_with_pause(extra_wait):
                                 break
                             continue
                         stale_detected = False

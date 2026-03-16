@@ -69,6 +69,7 @@ class AppConfig:
     action_delay: float = 0.12
     click_jitter: int = 2
     human_delay: bool = True
+    realistic_mode: bool = False
     hold_shift_loop: bool = False
     cycle_delay: float = 0.8
     target_text: str = ""
@@ -88,6 +89,7 @@ class AppConfig:
             action_delay=float(data.get("action_delay", 0.12)),
             click_jitter=int(data.get("click_jitter", 2)),
             human_delay=bool(data.get("human_delay", True)),
+            realistic_mode=bool(data.get("realistic_mode", False)),
             hold_shift_loop=bool(data.get("hold_shift_loop", False)),
             cycle_delay=float(data.get("cycle_delay", 0.8)),
             target_text=str(data.get("target_text", "")),
